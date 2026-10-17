@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="核心反常点：NAT 场景里的趋光性是一种自发的动力学模型，不同失败率通过表项寿命转化为选择压力，系统在没有健康感知的情况下自行完成流量迁移。">
+  <title>解Bug之路-NAT引发的性能瓶颈 - 苍天环绕的小世界</title>
+  <link rel="stylesheet" href="/blog/assets/site.css?v=20261007-contact-page">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="/blog/">苍天环绕的小世界</a>
+  <nav><a href="/blog/">首页</a><a class="nav-featured" href="/blog/featured.html">精品阅读</a><a href="/blog/#articles">文章</a><a href="/blog/contact.html">联系我</a></nav>
+</header>
+<main class="article-layout">
+  <aside class="article-aside">
+    <a class="back-link" href="/blog/">返回首页</a>
+    <div class="toc"><h2>目录</h2><a class="toc-level-1" href="#%E8%A7%A3bug%E4%B9%8B%E8%B7%AF-nat%E5%BC%95%E5%8F%91%E7%9A%84%E6%80%A7%E8%83%BD%E7%93%B6%E9%A2%88">解Bug之路-NAT引发的性能瓶颈</a>
+<a class="toc-level-2" href="#%E7%8E%AF%E5%A2%83%E4%BB%8B%E7%BB%8D">环境介绍</a>
+<a class="toc-level-3" href="#%E8%B0%83%E7%94%A8%E6%8B%93%E6%89%91%E5%9B%BE">调用拓扑图</a>
+<a class="toc-level-3" href="#%E7%9F%AD%E8%BF%9E%E6%8E%A5-http1-0">短连接-HTTP1.0</a>
+<a class="toc-level-3" href="#%E5%86%85%E6%A0%B8%E5%8F%82%E6%95%B0%E9%85%8D%E7%BD%AE">内核参数配置</a>
+<a class="toc-level-2" href="#bug%E7%8E%B0%E5%9C%BA">Bug现场</a>
+<a class="toc-level-3" href="#client%E7%AB%AF%E5%A4%A7%E9%87%8F%E5%88%9B%E5%BB%BA%E8%BF%9E%E6%8E%A5%E5%BC%82%E5%B8%B8-%E8%80%8Cserver%E7%AB%AF%E6%97%A0%E6%B3%95%E6%84%9F%E7%9F%A5">Client端大量创建连接异常,而Server端无法感知</a>
+<a class="toc-level-3" href="#lvs%E7%9B%91%E6%8E%A7%E6%9B%B2%E7%BA%BF">LVS监控曲线</a>
+<a class="toc-level-3" href="#%E6%AF%8F%E5%A4%A9%E5%8F%91%E7%94%9F%E7%9A%84%E6%97%B6%E9%97%B4%E7%82%B9%E9%9D%9E%E5%B8%B8%E6%8E%A5%E8%BF%91">每天发生的时间点非常接近</a>
+<a class="toc-level-3" href="#%E9%9A%BE%E9%81%93%E6%98%AF%E7%BD%91%E7%BB%9C%E9%97%AE%E9%A2%98">难道是网络问题?</a>
+<a class="toc-level-2" href="#%E8%BF%9B%E8%A1%8C%E6%8A%93%E5%8C%85">进行抓包</a>
+<a class="toc-level-3" href="#%E6%8A%93%E5%8C%85%E7%BB%93%E6%9E%9C">抓包结果</a>
+<a class="toc-level-3" href="#%E7%8E%B0%E8%B1%A1%E6%98%AF%E6%80%8E%E4%B9%88%E4%BA%A7%E7%94%9F%E7%9A%84">现象是怎么产生的?</a>
+<a class="toc-level-3" href="#time-wait%E7%9A%84%E6%8C%81%E7%BB%AD%E6%97%B6%E9%97%B4">TIME_WAIT的持续时间</a>
+<a class="toc-level-3" href="#%E9%97%AE%E9%A2%98%E5%8F%91%E7%94%9F%E6%9D%A1%E4%BB%B6">问题发生条件</a>
+<a class="toc-level-3" href="#%E9%82%A3%E4%B9%88%E4%BB%80%E4%B9%88%E6%97%B6%E5%80%99%E9%87%8D%E7%94%A8time-wait%E7%8A%B6%E6%80%81%E7%9A%84socket%E5%91%A2">那么什么时候重用TIME_WAIT状态的Socket呢</a>
+<a class="toc-level-3" href="#%E4%B8%BA%E4%BB%80%E4%B9%88%E5%8E%8B%E6%B5%8B%E7%9A%84%E6%97%B6%E5%80%99%E4%B8%8D%E5%87%BA%E7%8E%B0%E9%97%AE%E9%A2%98">为什么压测的时候不出现问题</a>
+<a class="toc-level-3" href="#%E5%A6%82%E4%BD%95%E8%A7%A3%E9%87%8Alvs%E7%9A%84%E7%9B%91%E6%8E%A7%E6%9B%B2%E7%BA%BF">如何解释LVS的监控曲线?</a>
+<a class="toc-level-2" href="#nat%E4%B8%8B%E5%9B%BA%E5%AE%9Aip%E5%9C%B0%E5%9D%80%E5%AF%B9%E7%9A%84%E6%80%A7%E8%83%BD%E7%93%B6%E9%A2%88">NAT下固定ip地址对的性能瓶颈</a>
+<a class="toc-level-3" href="#lvs%E6%9B%B2%E7%BA%BF%E5%BC%82%E5%B8%B8%E4%BA%8B%E4%BB%B6%E5%92%8C%E6%8A%A5%E9%94%99%E6%97%B6%E9%97%B4%E6%8E%A5%E8%BF%91">LVS曲线异常事件和报错时间接近</a>
+<a class="toc-level-2" href="#%E5%B0%9D%E8%AF%95%E4%BF%AE%E5%A4%8D">尝试修复</a>
+<a class="toc-level-3" href="#%E8%AE%BE%E7%BD%AEtcp-max-tw-buckets">设置tcp_max_tw_buckets</a>
+<a class="toc-level-3" href="#%E5%B0%9D%E8%AF%95%E6%89%A9%E5%B1%95%E6%BA%90%E5%9C%B0%E5%9D%80">尝试扩展源地址</a>
+<a class="toc-level-3" href="#%E6%89%A9%E5%AE%B9nginx-%E6%B2%A1%E6%95%88%E6%9E%9C">扩容Nginx?没效果</a>
+<a class="toc-level-3" href="#%E4%B8%BA%E4%BB%80%E4%B9%88%E6%96%B0%E6%89%A9%E5%AE%B9%E7%9A%84nginx%E8%A1%A8%E7%8E%B0%E5%BC%82%E5%B8%B8%E4%BC%98%E5%BC%82%E5%91%A2">为什么新扩容的Nginx表现异常优异呢?</a>
+<a class="toc-level-1" href="#%E6%B5%81%E9%87%8F%E5%B1%82%E9%9D%A2%E9%97%AE%E9%A2%98%E6%90%9E%E6%B8%85%E6%A5%9A%E4%BA%86-%E4%BD%86%E8%BF%98%E6%9C%89%E4%B8%9A%E5%8A%A1%E5%B1%82%E9%9D%A2%E9%97%AE%E9%A2%98">流量层面问题搞清楚了，但还有业务层面问题</a>
+<a class="toc-level-1" href="#%E5%85%B3%E9%97%ADtcp-timestamps">关闭tcp_timestamps</a>
+<a class="toc-level-1" href="#%E5%A4%A7%E6%B5%81%E9%87%8F%E4%B8%9A%E5%8A%A1%E5%BC%80%E5%A7%8B%E8%B4%9F%E8%BD%BD%E5%91%8A%E8%AD%A6%E4%BA%86">大流量业务开始负载告警了</a>
+<a class="toc-level-1" href="#%E4%B8%BA%E4%BB%80%E4%B9%88%E5%81%8F%E5%81%8F%E4%BF%AE%E6%94%B9%E4%BA%86tcp-timestamps%E4%B9%8B%E5%90%8E%E5%A4%A7%E6%B5%81%E9%87%8F%E5%BA%94%E7%94%A8%E6%89%8D%E6%9C%89%E8%B4%9F%E8%BD%BD%E5%91%8A%E8%AD%A6">为什么偏偏修改了tcp_timestamps之后大流量应用才有负载告警</a>
+<a class="toc-level-1" href="#%E8%8B%A5%E5%B9%B2%E5%B9%B4%E5%90%8E%E7%9A%84%E5%9B%9E%E5%93%8D">若干年后的回响</a>
+<a class="toc-level-2" href="#f5%E7%9A%84%E9%BB%98%E8%AE%A4%E6%A8%A1%E5%BC%8Fstandard%E6%B2%A1%E6%9C%89%E8%BF%99%E4%B8%AA%E9%97%AE%E9%A2%98">F5的默认模式Standard没有这个问题</a>
+<a class="toc-level-2" href="#%E4%B8%BA%E4%BB%80%E4%B9%88%E5%85%B6%E5%AE%83%E5%A4%A7%E6%B5%81%E9%87%8F%E7%9A%84%E4%B8%9A%E5%8A%A1%E6%B2%A1%E6%9C%89%E9%97%AE%E9%A2%98-%E5%8F%AA%E6%9C%89%E8%BF%99%E4%B8%AA%E5%A4%A7%E6%B5%81%E9%87%8F%E4%B8%9A%E5%8A%A1%E6%9C%89%E9%97%AE%E9%A2%98">为什么其它大流量的业务没有问题，只有这个大流量业务有问题</a>
+<a class="toc-level-2" href="#%E7%94%B1dpvs%E6%94%B9%E9%80%A0%E6%83%B3%E5%88%B0%E7%9A%84">由DPVS改造想到的</a>
+<a class="toc-level-2" href="#%E5%BF%B5%E5%BF%B5%E4%B8%8D%E5%BF%98-%E5%BF%85%E6%9C%89%E5%9B%9E%E5%93%8D">念念不忘，必有回响</a>
+<a class="toc-level-1" href="#%E6%80%BB%E7%BB%93">总结</a></div>
+  </aside>
+  <article class="article">
+    <header class="article-title">
+      <div class="meta"><span>解Bug之路</span><time>2026.09.18</time><span>17 min read</span></div>
+      <h1>解Bug之路-NAT引发的性能瓶颈</h1>
+      <p>核心反常点：NAT 场景里的趋光性是一种自发的动力学模型，不同失败率通过表项寿命转化为选择压力，系统在没有健康感知的情况下自行完成流量迁移。</p>
+    </header>
+    <div class="prose"><h1 id="%E8%A7%A3bug%E4%B9%8B%E8%B7%AF-nat%E5%BC%95%E5%8F%91%E7%9A%84%E6%80%A7%E8%83%BD%E7%93%B6%E9%A2%88">解Bug之路-NAT引发的性能瓶颈</h1>
+<p>笔者最近解决了一个非常曲折的问题，从抓包开始一路排查到不同内核版本间的细微差异，最后才完美解释了所有的现象。在这里将整个过程写成博文记录下来，希望能够对读者有所帮助。篇幅可能会有点长,耐心看完,绝对物有所值^_^。</p>
+<p>(另外为了防止文章本体过于长，笔者还将一部分linux TIME_WAIT持续时间的内核源码分析放到了独立的文章里面，有兴趣的可以访问这一篇https://www.alchemystar.net/articles/linux-time-wait-4a2c9b4c.html)</p>
+<h2 id="%E7%8E%AF%E5%A2%83%E4%BB%8B%E7%BB%8D">环境介绍</h2>
+<p>先来介绍一下出问题的环境吧，调用拓扑如下图所示:</p>
+<h3 id="%E8%B0%83%E7%94%A8%E6%8B%93%E6%89%91%E5%9B%BE">调用拓扑图</h3>
+<p class="image-only"><img src="/blog/assets/source/image/nat_perf/nat_topo.png" alt="image codegen" loading="lazy"></p>
+<p>合作方的多台机器用NAT将多个源ip映射成同一个出口ip 20.1.1.1，而我们内网将多个Nginx映射成同一个目的ip 30.1.1.1。这样，在防火墙和LVS之间，所有的请求始终是通过(20.1.1.1,30.1.1.1)这样一个ip地址对进行访问。 同时还固定了一个参数，那就是目的端口号始终是443。</p>
+<p class="image-only"><img src="/blog/assets/source/image/nat_perf/nat_one_port.png" alt="image codegen" loading="lazy"></p>
+<h3 id="%E7%9F%AD%E8%BF%9E%E6%8E%A5-http1-0">短连接-HTTP1.0</h3>
+<p>由于对方是采用短连接和Nginx进行交互的，而且采用的协议是HTTP-1.0。所以我们的Nginx在每个请求完成后，会主动关闭连接，从而造成有大量的TIME_WAIT。</p>
+<p class="image-only"><img src="/blog/assets/source/image/nat_perf/app_lvs_nginx.png" alt="image codegen" loading="lazy"></p>
+<p>值得注意的是，TIME_WAIT取决于Server端和Client端谁先关闭这个Socket。所以Nginx作为Server端先关闭的话，也必然会产生TIME_WAIT。</p>
+<p class="image-only"><img src="/blog/assets/source/image/nat_perf/nginx_time_wait.png" alt="image codegen" loading="lazy"></p>
+<h3 id="%E5%86%85%E6%A0%B8%E5%8F%82%E6%95%B0%E9%85%8D%E7%BD%AE">内核参数配置</h3>
+<p>内核参数配置如下所示:</p>
+<pre><code class="language-">$ cat /proc/sys/net/ipv4/tcp_tw_reuse
+0
+$ cat /proc/sys/net/ipv4/tcp_tw_recycle
+0
+$ cat /proc/sys/net/ipv4/tcp_timestamps
+1</code></pre>
+<p>其中tcp_tw_recycle设置为0。这样，可以有效解决tcp_timestamps和tcp_tw_recycle在NAT情况下导致的连接失败问题。具体见笔者之前的博客:</p>
+<pre><code class="language-">https://my.oschina.net/alchemystar/blog/3119992</code></pre>
+<h2 id="bug%E7%8E%B0%E5%9C%BA">Bug现场</h2>
+<p>好了，介绍完环境，我们就可以正式描述Bug现场了。</p>
+<h3 id="client%E7%AB%AF%E5%A4%A7%E9%87%8F%E5%88%9B%E5%BB%BA%E8%BF%9E%E6%8E%A5%E5%BC%82%E5%B8%B8-%E8%80%8Cserver%E7%AB%AF%E6%97%A0%E6%B3%95%E6%84%9F%E7%9F%A5">Client端大量创建连接异常,而Server端无法感知</h3>
+<p>表象是合作方的应用出现大量的创建连接异常，而Server端确没有任何关于这些异常的任何异常日志，仿佛就从来没有出现过这些请求一样。</p>
+<p class="image-only"><img src="/blog/assets/source/image/nat_perf/bug_now.png" alt="image codegen" loading="lazy"></p>
+<h3 id="lvs%E7%9B%91%E6%8E%A7%E6%9B%B2%E7%BA%BF">LVS监控曲线</h3>
+<p>出现问题后，笔者翻了下LVS对应的监控曲线，其中有个曲线的变现非常的诡异。如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/nat_perf/lvs_monitor.png" alt="image codegen" loading="lazy"></p>
+<p>什么情况?看上去像建立不了连接了？但是虽然业务有大量的报错，依旧有很高的访问量,看日志的话，每秒请求应该在550向上!和这个曲线上面每秒只有30个新建连接是矛盾的！</p>
+<h3 id="%E6%AF%8F%E5%A4%A9%E5%8F%91%E7%94%9F%E7%9A%84%E6%97%B6%E9%97%B4%E7%82%B9%E9%9D%9E%E5%B8%B8%E6%8E%A5%E8%BF%91">每天发生的时间点非常接近</h3>
+<p>观察了几天后。发现，每天都在10点左右开始发生报错，同时在12点左右就慢慢恢复。</p>
+<p class="image-only"><img src="/blog/assets/source/image/nat_perf/time_fix.png" alt="image codegen" loading="lazy"></p>
+<p>感觉就像每天10点在做活动，导致流量超过了系统瓶颈，进而暴露出问题。而11:40之后，流量慢慢下降，系统才慢慢恢复。难道LVS这点量都撑不住?才550TPS啊？就崩溃了？</p>
+<h3 id="%E9%9A%BE%E9%81%93%E6%98%AF%E7%BD%91%E7%BB%9C%E9%97%AE%E9%A2%98">难道是网络问题?</h3>
+<p>难道就是传说中的网络问题？看了下监控，流量确实增加，不过只占了将近1/8的带宽，离打爆网络还远着呢。</p>
+<p class="image-only"><img src="/blog/assets/source/image/nat_perf/net_not_full.png" alt="image codegen" loading="lazy"></p>
+<h2 id="%E8%BF%9B%E8%A1%8C%E6%8A%93%E5%8C%85">进行抓包</h2>
+<p>不管三七二十一，先抓包吧!</p>
+<h3 id="%E6%8A%93%E5%8C%85%E7%BB%93%E6%9E%9C">抓包结果</h3>
+<p>在这里笔者给出一个典型的抓包结果:</p>
+<table><thead><tr><th>序号</th><th>时间</th><th>源地址</th><th>目的地址</th><th>源端口号</th><th>目的端口号</th><th>信息</th></tr></thead><tbody>
+<tr><td>1</td><td>09:57:30.60</td><td>30.1.1.1</td><td>20.1.1.1</td><td>443</td><td>33735</td><td>[FIN,ACK]Seq=507,Ack=2195,TSval=1164446830</td></tr>
+<tr><td>2</td><td>09:57:30.64</td><td>20.1.1.1</td><td>30.1.1.1</td><td>33735</td><td>443</td><td>[FIN,ACK]Seq=2195,Ack=508,TSval=2149756058</td></tr>
+<tr><td>3</td><td>09:57:30.64</td><td>30.1.1.1</td><td>20.1.1.1</td><td>443</td><td>33735</td><td>[ACK]Seq=508,Ack=2196,TSval=1164446863</td></tr>
+<tr><td>4</td><td>09:59:22.06</td><td>20.1.1.1</td><td>30.1.1.1</td><td>33735</td><td>443</td><td>[SYN]Seq=0,TSVal=2149514922</td></tr>
+<tr><td>5</td><td>09:59:22.06</td><td>30.1.1.1</td><td>20.1.1.1</td><td>443</td><td>33735</td><td>[ACK]Seq=1,Ack=1487349876,TSval=1164558280</td></tr>
+<tr><td>6</td><td>09:59:22.08</td><td>20.1.1.1</td><td>30.1.1.1</td><td>33735</td><td>443</td><td>[RST]Seq=1487349876</td></tr>
+</tbody></table>
+<p>上面抓包结果如下图所示,一开始33735-&gt;443这个Socket四次挥手。在将近两分钟后又使用了同一个33735端口和443建立连接，443给33735回了一个莫名其妙的Ack,导致33735发了RST！</p>
+<p class="image-only"><img src="/blog/assets/source/image/nat_perf/handshake_rst.png" alt="image codegen" loading="lazy"></p>
+<h3 id="%E7%8E%B0%E8%B1%A1%E6%98%AF%E6%80%8E%E4%B9%88%E4%BA%A7%E7%94%9F%E7%9A%84">现象是怎么产生的?</h3>
+<p>首先最可疑的是为什么发送了一个莫名其妙的Ack回来?笔者想到,这个Ack是WireShark给我计算出来的。为了我们方便，WireShark会根据Seq=0而调整Ack的值。事实上，真正的Seq是个随机数！有没有可能是WireShark在某些情况下计算错误？ 还是看看最原始的未经过加工的数据吧，于是笔者将wireshark的</p>
+<pre><code class="language-">Relative sequence numbers</code></pre>
+<p>给取消了。取消后的抓包结果立马就有意思了!调整过后抓包结果如下所示:</p>
+<table><thead><tr><th>序号</th><th>时间</th><th>源地址</th><th>目的地址</th><th>源端口号</th><th>目的端口号</th><th>信息</th></tr></thead><tbody>
+<tr><td>1</td><td>09:57:30.60</td><td>30.1.1.1</td><td>20.1.1.1</td><td>443</td><td>33735</td><td>[FIN,ACK]Seq=909296387,Ack=1556577962,TSval=1164446830</td></tr>
+<tr><td>2</td><td>09:57:30.64</td><td>20.1.1.1</td><td>30.1.1.1</td><td>33735</td><td>443</td><td>[FIN,ACK]Seq=1556577962,Ack=909296388,TSval=2149756058</td></tr>
+<tr><td>3</td><td>09:57:30.64</td><td>30.1.1.1</td><td>20.1.1.1</td><td>443</td><td>33735</td><td>[ACK]Seq=909296388,Ack=1556577963,TSval=1164446863</td></tr>
+<tr><td>4</td><td>09:59:22.06</td><td>20.1.1.1</td><td>30.1.1.1</td><td>33735</td><td>443</td><td>[SYN]Seq=69228087,TSVal=2149514922</td></tr>
+<tr><td>5</td><td>09:59:22.06</td><td>30.1.1.1</td><td>20.1.1.1</td><td>443</td><td>33735</td><td>[ACK]Seq=909296388,Ack=1556577963,TSval=1164558280</td></tr>
+<tr><td>6</td><td>09:59:22.08</td><td>20.1.1.1</td><td>30.1.1.1</td><td>33735</td><td>443</td><td>[RST]Seq=1556577963</td></tr>
+</tbody></table>
+<p>看表中，四次挥手里面的Seq和Ack对应的值和三次握手中那个错误的ACK完全一致！也就是说，四次挥手后，五元组并没有消失，而是在111.5s内还存活着！按照TCPIP状态转移图，只有TIME_WAIT状态才会如此。</p>
+<p class="image-only"><img src="/blog/assets/source/image/nat_perf/same_seq_and_ack.png" alt="image codegen" loading="lazy"></p>
+<p>我们可以看看Linux关于TIME_WAIT处理的内核源码:</p>
+<pre><code class="language-">	switch (tcp_timewait_state_process(inet_twsk(sk), skb, th)) {
+	// 如果是TCP_TW_SYN，那么允许此SYN分节重建连接
+	// 即允许TIME_WAIT状态跃迁到SYN_RECV
+	case TCP_TW_SYN: {
+		struct sock *sk2 = inet_lookup_listener(dev_net(skb-&gt;dev),
+							&amp;tcp_hashinfo,
+							iph-&gt;saddr, th-&gt;source,
+							iph-&gt;daddr, th-&gt;dest,
+							inet_iif(skb));
+		if (sk2) {
+			inet_twsk_deschedule(inet_twsk(sk), &amp;tcp_death_row);
+			inet_twsk_put(inet_twsk(sk));
+			sk = sk2;
+			goto process;
+		}
+		/* Fall through to ACK */
+	}
+	// 如果是TCP_TW_ACK，那么，返回记忆中的ACK,这和我们的现象一致
+	case TCP_TW_ACK:
+		tcp_v4_timewait_ack(sk, skb);
+		break;
+	// 如果是TCP_TW_RST直接发送RESET包
+	case TCP_TW_RST:
+		tcp_v4_send_reset(sk, skb);
+		inet_twsk_deschedule(inet_twsk(sk), &amp;tcp_death_row);
+		inet_twsk_put(inet_twsk(sk));
+		goto discard_it;
+	// 如果是TCP_TW_SUCCESS则直接丢弃此包，不做任何响应
+	case TCP_TW_SUCCESS:;
+	}
+	goto discard_it;</code></pre>
+<p>上面的代码有两个分支，值得我们注意，一个是TCP_TW_ACK，在这个分支下，返回TIME_WAIT记忆中的ACK和我们的抓包现象一模一样。还有一个TCP_TW_SYN,它表明了在 TIME_WAIT状态下，可以立马重用此五元组，跳过2MSL而达到SYN_RECV状态！</p>
+<p class="image-only"><img src="/blog/assets/source/image/nat_perf/TW_SUCCESS_AND_TW_ACK.png" alt="image codegen" loading="lazy"></p>
+<p>状态的迁移就在于tcp_timewait_state_process这个函数,我们着重看下想要观察的分支:</p>
+<pre><code class="language-">enum tcp_tw_status
+tcp_timewait_state_process(struct inet_timewait_sock *tw, struct sk_buff *skb,
+			   const struct tcphdr *th)
+{
+	bool paws_reject = false;
+	......
+	paws_reject = tcp_paws_reject(&amp;tmp_opt, th-&gt;rst);
+	if (!paws_reject &amp;&amp;
+	    (TCP_SKB_CB(skb)-&gt;seq == tcptw-&gt;tw_rcv_nxt &amp;&amp;
+	     (TCP_SKB_CB(skb)-&gt;seq == TCP_SKB_CB(skb)-&gt;end_seq || th-&gt;rst))) {
+		......
+		// 重复的ACK,discard此包
+		return TCP_TW_SUCCESS;
+	}
+	// 如果是SYN分节，而且通过了paws校验
+	if (th-&gt;syn &amp;&amp; !th-&gt;rst &amp;&amp; !th-&gt;ack &amp;&amp; !paws_reject &amp;&amp;
+	    (after(TCP_SKB_CB(skb)-&gt;seq, tcptw-&gt;tw_rcv_nxt) ||
+	     (tmp_opt.saw_tstamp &amp;&amp;
+	      (s32)(tcptw-&gt;tw_ts_recent - tmp_opt.rcv_tsval) &lt; 0))) {
+		......
+		// 返回TCP_TW_SYN,允许重用TIME_WAIT五元组重新建立连接
+		return TCP_TW_SYN;
+	}
+	// 如果没有通过paws校验，则增加统计参数
+	if (paws_reject)
+		NET_INC_STATS_BH(twsk_net(tw), LINUX_MIB_PAWSESTABREJECTED);
+	if (!th-&gt;rst) {
+		// 如果没有通过paws校验或分节包含ack,则将TIMEWAIT持续时间重新延长
+		if (paws_reject || th-&gt;ack)
+			inet_twsk_schedule(tw, &amp;tcp_death_row, TCP_TIMEWAIT_LEN,
+					   TCP_TIMEWAIT_LEN);
+		// 返回TCP_TW_ACK,也即TCP重传ACK到对面
+		return TCP_TW_ACK;
+	}
+}</code></pre>
+<p>根据上面源码，PAWS(Protection Against Wrapped Sequence Numbers，防止序列号回绕)校验机制如果生效而拒绝此分节的话，LINUX_MIB_PAWSESTABREJECTED这个统计参数会增加，对应于Linux中的命令即是:</p>
+<pre><code class="language-">netstat -s | grep reject
+216576 packets rejects in established connections because of timestamp</code></pre>
+<p>这么上去后端的Nginx一统计，果然有大量的报错。而且根据笔者的观察，这个统计参数急速增加的时间段就是出问题的时间段，也就是每天早上10:00-12:00左右。每次大概会增加1W多个统计参数。 那么什么时候PAWS会不通过呢，我们直接看下tcp_paws_reject的源码吧:</p>
+<pre><code class="language-">static inline int tcp_paws_reject(const struct tcp_options_received *rx_opt,
+				  int rst)
+{
+	if (tcp_paws_check(rx_opt, 0))
+		return 0;
+	// 如果是rst，则放松要求，60s没有收到对端报文，认为PAWS检测通过 
+	if (rst &amp;&amp; get_seconds() &gt;= rx_opt-&gt;ts_recent_stamp + TCP_PAWS_MSL)
+		return 0;
+	return 1;
+}
+
+static inline int tcp_paws_check(const struct tcp_options_received *rx_opt,
+				 int paws_win)
+{
+
+	// 如果ts_recent中记录的上次报文（SYN）的时间戳，小于当前报文的时间戳（TSval），表明paws检测通过
+	// paws_win = 0
+	if ((s32)(rx_opt-&gt;ts_recent - rx_opt-&gt;rcv_tsval) &lt;= paws_win)
+		return 1;
+	// 否则，上一次获得ts_recent时间戳的时刻的24天之后，为真表明已经有超过24天没有接收到对端的报文了，认为PAWS检测通过
+	if (unlikely(get_seconds() &gt;= rx_opt-&gt;ts_recent_stamp + TCP_PAWS_24DAYS))
+		return 1;
+
+	return 0;
+}
+</code></pre>
+<p>在抓包的过程中，我们明显发现，在四次挥手时候，记录的tsval是2149756058,而下一次syn三次握手的时候是2149514922,反而比之前的小了！</p>
+<table><thead><tr><th>序号</th><th>时间</th><th>源地址</th><th>目的地址</th><th>源端口号</th><th>目的端口号</th><th>信息</th></tr></thead><tbody>
+<tr><td>2</td><td>09:57:30.64</td><td>20.1.1.1</td><td>30.1.1.1</td><td>33735</td><td>443</td><td>[FIN,ACK]TSval=2149756058</td></tr>
+<tr><td>4</td><td>09:59:22.06</td><td>20.1.1.1</td><td>30.1.1.1</td><td>33735</td><td>443</td><td>[SYN]TSVal=2149514922</td></tr>
+</tbody></table>
+<p>所以PAWS校验不过。</p>
+<p>那么为什么会这个SYN时间戳比之前挥手的时间戳还小呢?那当然是NAT的锅喽，NAT把多台机器的ip虚拟成同一个ip。但是多台机器的时间戳(也即从启动开始到现在的时间，非墙上时间),如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/nat_perf/many_timestamps.png" alt="image codegen" loading="lazy"></p>
+<p>但是还有一个疑问,笔者记得TIME_WAIT也即2MSL在Linux的代码里面是定义为了60s。为何抓包的结果却存活了将近2分钟之久呢？</p>
+<h3 id="time-wait%E7%9A%84%E6%8C%81%E7%BB%AD%E6%97%B6%E9%97%B4">TIME_WAIT的持续时间</h3>
+<p>于是笔者开始阅读器关于TIME_WAIT定时器的源码，具体可见笔者的另一篇博客:</p>
+<pre><code class="language-">从Linux源码看TIME_WAIT状态的持续时间
+https://my.oschina.net/alchemystar/blog/4690516</code></pre>
+<p>结论如下</p>
+<p class="image-only"><img src="/blog/assets/source/image/remote/oscimg.oschina.net/up-8c67e3181cb5ffd2162093c091d373b42dd-5ba74c72ee4b.png" alt="image codegen" loading="lazy"></p>
+<p>在TIME_WAIT很多的状态下，TIME_WAIT能够存活112.5s，将近两分钟的时间，和我们的抓包结果一致。 当然了，这个计算只是针对Linux 2.6和3.10内核而言，而对红帽维护的3.10.0-1127.el7内核版本则会有另外的变化，这个变化导致了一个令笔者感到非常奇异的现象，这个在后面会提到。</p>
+<h3 id="%E9%97%AE%E9%A2%98%E5%8F%91%E7%94%9F%E6%9D%A1%E4%BB%B6">问题发生条件</h3>
+<p>如上面所解释，只有在Server端TIME_WAIT还没有消失时候,重用这个Socket的时候，遇上了反序的时间戳SYN，就会发生这种问题。由于NAT前面的所有机器时间戳都不相同，所以有很大概率会导致时间戳反序！</p>
+<h3 id="%E9%82%A3%E4%B9%88%E4%BB%80%E4%B9%88%E6%97%B6%E5%80%99%E9%87%8D%E7%94%A8time-wait%E7%8A%B6%E6%80%81%E7%9A%84socket%E5%91%A2">那么什么时候重用TIME_WAIT状态的Socket呢</h3>
+<p>笔者知道，防火墙的端口号选择逻辑是RoundRobin的，也即从2048开始一直增长到65535，再回绕到2048,如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/nat_perf/timewait_reuse.png" alt="image codegen" loading="lazy"></p>
+<h3 id="%E4%B8%BA%E4%BB%80%E4%B9%88%E5%8E%8B%E6%B5%8B%E7%9A%84%E6%97%B6%E5%80%99%E4%B8%8D%E5%87%BA%E7%8E%B0%E9%97%AE%E9%A2%98">为什么压测的时候不出现问题</h3>
+<p>但我们在线下压测的时候，明显速率远超560tps,那为何确没有这样的问题出现呢。很简单，是因为 TCP_TW_SYN这个分支，由于我们的压测机没有过NAT，那么时间戳始终保持单IP下的单调递增，即便&gt;560TPS之后，走的也是TCP_TW_SYN,将TIME_WAIT Socket重用为SYN_RECV,自然不会出现这样的问题，如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/nat_perf/pressure_okay.png" alt="image codegen" loading="lazy"></p>
+<h3 id="%E5%A6%82%E4%BD%95%E8%A7%A3%E9%87%8Alvs%E7%9A%84%E7%9B%91%E6%8E%A7%E6%9B%B2%E7%BA%BF">如何解释LVS的监控曲线?</h3>
+<p>等等,564TPS?这个和LVS陡然下跌的TPS基本相同！难道在端口号复用之后LVS就不会新建连接(其实是LVS中的session表项)？从而导致统计参数并不增加? 于是笔者直接去撸了一下LVS的源码:</p>
+<pre><code class="language-">tcp_conn_schedule
+		|-&gt;ip_vs_schedule
+			/* 如果新建conn表项成功，则对已有连接数++ */
+			|-&gt;ip_vs_conn_stats
+而在我们的入口函数ip\_vs\_in中
+static unsigned int
+ip_vs_in(unsigned int hooknum, struct sk_buff *skb,
+	 const struct net_device *in, const struct net_device *out,
+	 int (*okfn) (struct sk_buff *))
+{
+	......
+	// 如果能找到对应的五元组
+	cp = pp-&gt;conn_in_get(af, skb, pp, &amp;iph, iph.len, 0, &amp;res_dir);
+
+	if (likely(cp)) {
+		/* For full-nat/local-client packets, it could be a response */
+		if (res_dir == IP_VS_CIDX_F_IN2OUT) {
+			return handle_response(af, skb, pp, cp, iph.len);
+		}
+	} else {
+		/* create a new connection */
+		int v;
+		// 找不到对应的五元组，则新建连接，同时conn++
+		if (!pp-&gt;conn_schedule(af, skb, pp, &amp;v, &amp;cp))
+			return v;
+	}
+	......
+}</code></pre>
+<p>很明显的，如果当前五元组表项存在，则直接复用表项，而不存在，才创建新的表项，同时conn++。而表项需要在LVS的FIN timeout时间超过后才消失(在笔者的环境里面是120s)。当端口号轮转一圈所需的时间小于120s时，LVS会直接复用尚未过期的表项，而统计参数不会有任何变化，从而导致了下面这个曲线。</p>
+<p class="image-only"><img src="/blog/assets/source/image/nat_perf/lvs_monitor.png" alt="image codegen" loading="lazy"></p>
+<p>当流量慢慢变小，无法达到重用端口号的条件的时候，曲线又会垂直上升。和笔者的推测一致。也就是说在五元组固定四元的情况下&gt;529tps(63488/120)的时候，在此固定业务下的新建连接数不会增加。</p>
+<p>而图中仅存的560-529≈31个连接创建，是由另一个业务的vip引起，在这个vip上，由于量很小，没有端口复用。但是LVS统计的是总数量，所以在端口号开始复用之后，始终会有少量的新建连接存在。</p>
+<p>值得注意的是，端口号复用之后，LVS转发的时候就会直接使用这个映射表项，所以相同的五元组到LVS后会转发给相同的Nginx,而不会进行WRR(Weight Round Robin)负载均衡,表现出了一定的&quot;亲和性&quot;。如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/nat_perf/lvs_same_table.png" alt="image codegen" loading="lazy"></p>
+<h2 id="nat%E4%B8%8B%E5%9B%BA%E5%AE%9Aip%E5%9C%B0%E5%9D%80%E5%AF%B9%E7%9A%84%E6%80%A7%E8%83%BD%E7%93%B6%E9%A2%88">NAT下固定ip地址对的性能瓶颈</h2>
+<p>好了，现在可以下结论了。在ip源和目的地址固定，目的端口号也固定的情况下，五元组的可变量只有ip源端口号了。如果防火墙保留0-2047端口，那么源端口号可使用2048-65535，共63488个端口。 由于每使用一个端口号，在高负载的情况下，都会产生一个约112.5s后才回收的TIME_WAIT。那么在63488/112.5也就是约564TPS(使用短连接)的情况下，就会复用TIME_WAIT下的Socket。再加上PAWS校验，就会造成大量的连接创建异常！</p>
+<p class="image-only"><img src="/blog/assets/source/image/nat_perf/connect_because_reuse.png" alt="image codegen" loading="lazy"></p>
+<p>这个论断和笔者观察到的应用报错以及LVS监控曲线一致。</p>
+<h3 id="lvs%E6%9B%B2%E7%BA%BF%E5%BC%82%E5%B8%B8%E4%BA%8B%E4%BB%B6%E5%92%8C%E6%8A%A5%E9%94%99%E6%97%B6%E9%97%B4%E6%8E%A5%E8%BF%91">LVS曲线异常事件和报错时间接近</h3>
+<p>因为LVS是在529TPS时候开始垂直下降，而端口号复用是在564TPS的时候开始，两者所需TPS非常接近，所以一般LVS出现曲线异常的时候，基本就是开始报错的时候！但是LVS曲线异常只能表明复用表项，并不能表明一定有问题，因为可以通过调节某些内核参数使得在端口号复用的时候不报错！</p>
+<p class="image-only"><img src="/blog/assets/source/image/nat_perf/lvs_and_tps.png" alt="image codegen" loading="lazy"></p>
+<p>在端口号复用情况下，lvs本身的新建连接数无法代表真实TPS。</p>
+<h2 id="%E5%B0%9D%E8%AF%95%E4%BF%AE%E5%A4%8D">尝试修复</h2>
+<h3 id="%E8%AE%BE%E7%BD%AEtcp-max-tw-buckets">设置tcp_max_tw_buckets</h3>
+<p>首先，笔者尝试限制Nginx所在Linux中最大TIME_WAIT数量</p>
+<pre><code class="language-">echo &#x27;5000&#x27;  &gt; /proc/sys/net/ipv4/tcp_max_tw_buckets</code></pre>
+<p>这基于一个很简单的想法，TIME_WAIT状态越少，那么命中TIME_WAIT状态Socket的概率肯定越小。设置了之后，确实报错量确实减少了好多。但由于TPS超越极限之后端口号不停的回绕，导致还是一直在报错，不会有根本性好转。</p>
+<p class="image-only"><img src="/blog/assets/source/image/nat_perf/tcp_tw_max_bucket.png" alt="image codegen" loading="lazy"></p>
+<p>如果将tcp_max_tw_buckets设置为0，那么按理论上来说不会出问题了。 但是无疑将TCP精心设计的TIME_WAIT这个状态给废弃了，笔者觉得这样做过于冒险，于是没有进行尝试。</p>
+<h3 id="%E5%B0%9D%E8%AF%95%E6%89%A9%E5%B1%95%E6%BA%90%E5%9C%B0%E5%9D%80">尝试扩展源地址</h3>
+<p>这个问题本质是由于五元组在限定了4元，只有源端口号可变的情况下，端口号只有 2048-65535可用。那么我们放开源地址的限定，例如将源IP增加到3个，无疑可以将TPS扩大三倍。</p>
+<p class="image-only"><img src="/blog/assets/source/image/nat_perf/src_ip_3.png" alt="image codegen" loading="lazy"></p>
+<p>同理，将目的地址给扩容，也能达到类似的效果。 但据网工反映，合作方通过他们的防火墙出来之后就只有一个IP,而一个IP在我们的防火墙上并不能映射成多个IP,多以在不变更它们网络设置的情况下无法扩展源地址。而扩容目的地址，也需要对合作方网络设置进行修改。本着不让合作方改动的服务精神，笔者开始尝试其它方案。</p>
+<h3 id="%E6%89%A9%E5%AE%B9nginx-%E6%B2%A1%E6%95%88%E6%9E%9C">扩容Nginx?没效果</h3>
+<p>在一开始笔者没有搞明白LVS那个诡异的曲线的时候，笔者并不知道在端口复用的情况下,LVS会表现出&quot;亲和性&quot;。于是想着，如果扩容Nginx后，根据负载均衡原则，正好落到有这个TIME_WAIT五元组的概率会降低，所以尝试着另扩容了一倍的Nginx。但由于之前所说的LVS在端口号复用下的亲和性，反而加大了TIME_WAIT段！</p>
+<p class="image-only"><img src="/blog/assets/source/image/nat_perf/nginx_twice.png" alt="image codegen" loading="lazy"></p>
+<h4 id="%E6%89%A9%E5%AE%B9nginx%E7%9A%84%E5%A5%87%E5%BC%82%E7%8E%B0%E8%B1%A1">扩容Nginx的奇异现象</h4>
+<p>在笔者想明白LVS的&quot;亲和性&quot;之后，对扩容Nginx会导致更多的报错已经有了心理预期，不过被现实啪啪啪打脸!报错量和之前基本一样。更奇怪的是，笔者发现非活跃连接数监控(即非ESTABLISHED)状态，会在端口号复用之后，呈现出一种负载不均衡的现象，就仿佛流量有了智能一样，像生物的趋光性一般全部跑向新扩容的Nginx。如下图所示。</p>
+<p class="image-only"><img src="/blog/assets/source/image/nat_perf/load_balance.png" alt="image codegen" loading="lazy"></p>
+<p>笔者上去新扩容的Nginx看了一下，发现新Nginx只有很少量的由于PAWS引起的报错，增长速率很慢，基本1个小时只有100多。而旧Nginx一个小时就有1W多！ 那么按照这个错误比例分布，就很好理解为什么形成这样的曲线了。因为LVS的亲和性,在端口号复用时刻，落到旧Nginx上会大概率失败，从而在FIN timeout到期后，重新选择一个负载均衡的时候，如果落到新Nginx上，按照统计参数来看基本都会成功，但如果还是落到旧Nginx上则基本还会失败，如此往复。就天然的形成了一个优先选择的过程，从而造成了这个曲线，让流量看起来具有&quot;智能&quot;。</p>
+<p class="image-only"><img src="/blog/assets/source/image/nat_perf/lvs_qinhe.png" alt="image codegen" loading="lazy"></p>
+<p>当然实际的过程会比这个复杂一点，多一些步骤，但大体是这个思路。 而在端口复用结束后，不管落到哪个Nginx上都会成功，所以负载均衡又会慢慢趋于均衡。</p>
+<h3 id="%E4%B8%BA%E4%BB%80%E4%B9%88%E6%96%B0%E6%89%A9%E5%AE%B9%E7%9A%84nginx%E8%A1%A8%E7%8E%B0%E5%BC%82%E5%B8%B8%E4%BC%98%E5%BC%82%E5%91%A2">为什么新扩容的Nginx表现异常优异呢?</h3>
+<p>新扩容的Nginx表现异常优异，在这个TPS下没有问题，那到底是为什么呢？笔者想了一天都没想明白。睡了一觉之后，对比了两者的内核参数，突然豁然开朗。原来新扩容的Nginx所在的内核版本变了，变成了3.10! 笔者连忙对比起了原来的2.6内核和3.10的内核版本变化，但毫无所得。。。思维有陷入了停滞</p>
+<h4 id="linux%E5%AE%98%E6%96%B93-10%E5%92%8C%E7%BA%A2%E5%B8%BD%E7%9A%843-10-0-1127-el7%E5%88%86%E6%94%AF%E5%B7%AE%E5%BC%82">Linux官方3.10和红帽的3.10.0-1127.el7分支差异</h4>
+<p>等等，我们线上的内核版本是3.10.0-1127.el7,并不是官方的内核，难道代码有所不同？于是笔者立马下载了3.10.0-1127.el7的源码。这一比对，终于让笔者找到了原因所在，看如下代码！</p>
+<pre><code class="language-">void inet_twdr_twkill_work(struct work_struct *work)
+{
+	struct inet_timewait_death_row *twdr =
+		container_of(work, struct inet_timewait_death_row, twkill_work);
+	bool rearm_timer = false;
+	int i;
+
+	BUILD_BUG_ON((INET_TWDR_TWKILL_SLOTS - 1) &gt;
+			(sizeof(twdr-&gt;thread_slots) * 8));
+
+	while (twdr-&gt;thread_slots) {
+		spin_lock_bh(&amp;twdr-&gt;death_lock);
+		for (i = 0; i &lt; INET_TWDR_TWKILL_SLOTS; i++) {
+			if (!(twdr-&gt;thread_slots &amp; (1 &lt;&lt; i)))
+				continue;
+
+			while (inet_twdr_do_twkill_work(twdr, i) != 0) {
+				// 如果这次没处理完，将rearm_timer设置为true
+				rearm_timer = true;
+				if (need_resched()) {
+					spin_unlock_bh(&amp;twdr-&gt;death_lock);
+					schedule();
+					spin_lock_bh(&amp;twdr-&gt;death_lock);
+				}
+			}
+
+			twdr-&gt;thread_slots &amp;= ~(1 &lt;&lt; i);
+		}
+		spin_unlock_bh(&amp;twdr-&gt;death_lock);
+	}
+	// 在这边多了一个rearm_timer,并将定时器设置为1s之后
+	// 这样，原来需要额外等待的7.5s现在收敛为额外等待1s
+	if (rearm_timer)
+		mod_timer(&amp;twdr-&gt;tw_timer, jiffies + HZ);
+}</code></pre>
+<p>如代码所示，3.10.0-1127.el7对TIME_WAIT的时间轮处理做了加速，让原来需要额外等待的7.5s收敛为额外等待的1s。经过校正后的时间轮如下所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/nat_perf/acc_slot.png" alt="image codegen" loading="lazy"></p>
+<p>那么TIME_WAIT的存活时间就从112.5s下降到60.5s(计算公式8.5*7+1)。 那么，在这个状态下，我们的端口复用临界TPS就达到了(65535-2048+1)/60.5≈1049TPS,由于线上业务量并没有达到这一TPS。所以对于新扩容的Nginx，并不会造成TIME_WAIT下的端口复用。所以错误量并没有变多！当然，由于旧Nginx的存在，错误量也没有变少。 但是，由于那个神奇的选择性负载均衡的存在，在端口复用时间越长，每秒钟的报错量会越少！直到LVS的表项全部指到新Nginx集群，就不会再有报错了！</p>
+<h4 id="tps%E6%B6%A8%E5%88%B01049tps%E4%BE%9D%E6%97%A7%E4%BC%9A%E6%8A%A5%E9%94%99">TPS涨到1049tps依旧会报错</h4>
+<p>当然了，根据上面的计算，在TPS继续上涨到1049后，依旧会产生错误。新版本内核只不过拉高了临界值，所以笔者还是要寻求更加彻底的解决方案。</p>
+<h1 id="%E6%B5%81%E9%87%8F%E5%B1%82%E9%9D%A2%E9%97%AE%E9%A2%98%E6%90%9E%E6%B8%85%E6%A5%9A%E4%BA%86-%E4%BD%86%E8%BF%98%E6%9C%89%E4%B8%9A%E5%8A%A1%E5%B1%82%E9%9D%A2%E9%97%AE%E9%A2%98">流量层面问题搞清楚了，但还有业务层面问题</h1>
+<p>事实上这个问题的最初发现者是一个流量非常小的业务，大概只有30TPS，但这个业务涉及到交易所以配置了非常严格的告警。在故障发生时候，这个业务的TPS过小导致大家都没有往性能容量方面去想。但是有一个大流量的不重要的业务与这个小流量但重要的业务共享了同一个VIP，大流量业务出现的一系列报错由于不重要的原因导致根本无人关心。在连续几天出现问题分析无果后，大家才找到了笔者，而笔者通过分析这个小流量业务所流过的链路最终定位到了初始的故障点就在VIP上，也就有了后续的故事。所以这给我们一个启示:</p>
+<pre><code class="language-">隔离性非常重要，重要业务和不重要的业务需要在链路上尽量分开，任何共用部分都可能会导致互相影响。</code></pre>
+<h1 id="%E5%85%B3%E9%97%ADtcp-timestamps">关闭tcp_timestamps</h1>
+<p>笔者一开始并不想修改这个参数，因为修改意味着关闭PAWS校验。要是真有个什么乱序包之类，就少了一层防御手段。但是事到如今，为了不让合作方修改，只能改这个参数了。不过由于是我们是专线！所以风险可控。</p>
+<pre><code class="language-">echo &#x27;0&#x27; &gt; /proc/sys/net/ipv4/tcp_timestamps</code></pre>
+<p>运行至今，小流量但重要的业务上反馈良好。终于，这个问题终于被解决了！！！！！！ 补充一句,关闭tcp_timestamps只是笔者在种种限制下所做的选择，更好的方案应该是扩充源或者目的地址。</p>
+<h1 id="%E5%A4%A7%E6%B5%81%E9%87%8F%E4%B8%9A%E5%8A%A1%E5%BC%80%E5%A7%8B%E8%B4%9F%E8%BD%BD%E5%91%8A%E8%AD%A6%E4%BA%86">大流量业务开始负载告警了</h1>
+<p>有趣的是，小流量业务反馈良好之后，大流量业务所承载的业务却由于tcp_timestamps的修改导致原来由kernel层拒绝掉的流量涌入了大流量的应用，导致负载变高，而这个告警优先级是比较高的，所以应用对应负责人通过扩容解决了这个问题。内核层的连接拒绝客观上充当了一层非预期的“限流器”^_^。</p>
+<h1 id="%E4%B8%BA%E4%BB%80%E4%B9%88%E5%81%8F%E5%81%8F%E4%BF%AE%E6%94%B9%E4%BA%86tcp-timestamps%E4%B9%8B%E5%90%8E%E5%A4%A7%E6%B5%81%E9%87%8F%E5%BA%94%E7%94%A8%E6%89%8D%E6%9C%89%E8%B4%9F%E8%BD%BD%E5%91%8A%E8%AD%A6">为什么偏偏修改了tcp_timestamps之后大流量应用才有负载告警</h1>
+<p>笔者却在这时候有了新的疑问，在我们修改tcp_timestamps前，大流量应用为什么没有负载告警呢？明明趋光性将基本所有的流量在一段时间后都导入到新扩容的Nginx上了，这时候能的临界TPS时1049，而且由于没有Nginx层的报错应该没有Kernel层的限流了才对。</p>
+<p>重新审视一下我们的模型，其实这个并不冲突。</p>
+<p>首先: 趋光性的形成并不需要新的Nginx完全不报错，只需要新的Nginx比旧的Nginx性能高即可。</p>
+<p>第二:真实流量达到峰值和Nginx能透出的峰值达到1049并不是同一个概念。只要TPS&gt;564，由于趋光性的作用，Nginx能透出的峰值也就是可以传给后端应用的流量就会持续增长。但是，真实流量可能在达到1049之前就已经降下去了，而真实流量的峰值又由于达到了后端应用的负载安全水位之上导致了告警。让我们比对一下修改后和修改前的情况吧:</p>
+<pre><code class="language-">在修改tcp_timestamps之后:内核不再充当限流器，当时大概是812TPS的时候出现了后端应用负载告警
+在修改tcp_timestamps之前:在外部业务流量达到812TPS的时候，由于趋光性是缓慢让可透出后端TPS上升的，这时候可透出到后端的TPS仍然由于内核层的限流效应导致无法将812TPS透出给后端所以没有负载告警。透出给后端应用的流量应该是min(外部业务流量，Nginx可透出流量)。而在Nginx可透出流量大于812TPS之后，外部业务流量又小于了812TPS。所以就有了修改前后端负载不告警的现象。</code></pre>
+<p class="image-only"><img src="/blog/assets/source/image/remote/blog-image-1256443715.cos.ap-guangzhou.myqcloud.com/2026-09-16-150759-835f7112bda1.png" alt="外部业务流量与应用负载告警" loading="lazy"></p>
+<h1 id="%E8%8B%A5%E5%B9%B2%E5%B9%B4%E5%90%8E%E7%9A%84%E5%9B%9E%E5%93%8D">若干年后的回响</h1>
+<h2 id="f5%E7%9A%84%E9%BB%98%E8%AE%A4%E6%A8%A1%E5%BC%8Fstandard%E6%B2%A1%E6%9C%89%E8%BF%99%E4%B8%AA%E9%97%AE%E9%A2%98">F5的默认模式Standard没有这个问题</h2>
+<p>也许是这个问题给笔者留下的印象过于深刻，于是笔者在遇到去某家银行评估全链路能承载TPS的时候专门去check了这个问题。但笔者发现，网络架构和这篇文章描述的一模一样，但确能承载2000TPS，唯一的不同就是他们的前端负载均衡用的是F5，而且是默认的Standard模式。很明显的，F5肯定做了什么优化，由于TIME_WAIT状态机肯定是不会变的，那么F5很有可能是对TIME_WAIT持续时间动手了。于是笔者让AI去查了一下F5的官方文档，Standard模式以及TIME_WAIT在F5的持续时间。果然，F5的TIME_WAIT默认持续时间是2s，这样一下次将PAWS机制限制的极限TPS拉高到63488 /2 = 31744 是1049的将近30倍(当然实际TPS受其它因素影响)。同时Standard模式又是这样的:</p>
+<pre><code class="language-">外部请求-&gt;F5 一个TCP连接  (由于TIME_WAIT默认持续时间是2s，所以这一层的由PAWS机制限制的极限TPS是31744) 
+F5-&gt;后端Nginx 另一个TCP连接 (这一层由于TCP连接是F5生成的，F5机器的时间戳单调递增，所以不存在PAWS问题)</code></pre>
+<p>相对于LVS的4层透明转发，F5的Standard模式并没有这个问题，只不过由于要维持大量TCP连接，F5会消耗大量资源。</p>
+<h2 id="%E4%B8%BA%E4%BB%80%E4%B9%88%E5%85%B6%E5%AE%83%E5%A4%A7%E6%B5%81%E9%87%8F%E7%9A%84%E4%B8%9A%E5%8A%A1%E6%B2%A1%E6%9C%89%E9%97%AE%E9%A2%98-%E5%8F%AA%E6%9C%89%E8%BF%99%E4%B8%AA%E5%A4%A7%E6%B5%81%E9%87%8F%E4%B8%9A%E5%8A%A1%E6%9C%89%E9%97%AE%E9%A2%98">为什么其它大流量的业务没有问题，只有这个大流量业务有问题</h2>
+<p>这其实也解释了，之前为什么一堆大流量的业务也没有问题，偏偏这个大流量的业务会有问题。很有可能很多大流量的业务走的也是F5或者Citrix这样的商用负载均衡组件，而新接入的流量由于接入了LVS所以才暴露了这个问题。</p>
+<h2 id="%E7%94%B1dpvs%E6%94%B9%E9%80%A0%E6%83%B3%E5%88%B0%E7%9A%84">由DPVS改造想到的</h2>
+<p>在想到商用负载均衡可以改变PAWS触发条件后，笔者不由得想起笔者一时技痒给DPVS增加过一个Session同步功能，在里面遇到一个小坑后发现其实可以很容易的添加删除tcp的一些选项(这个Session同步功能可见https://www.alchemystar.net/articles/dpvs-session-2f0618af.html)。那么DPVS或者LVS是不是有了这样的一个对于tcp_timestamps的删除功能呢？于是笔者翻了一下DPVS源代码，它还真的在FullNAT模式下将tcp_timestamps转化为了NOP，这样的好处是不用改变TCP头的长度！看来这个tcp_timestamps在不同客户端的非单调递增确实比较麻烦，最常见的问题其实是tcp_tw_recycle和tcp_timestamps共同导致的大概率失败问题，详情见https://www.alchemystar.net/articles/bug-c0b96e67.html。</p>
+<h2 id="%E5%BF%B5%E5%BF%B5%E4%B8%8D%E5%BF%98-%E5%BF%85%E6%9C%89%E5%9B%9E%E5%93%8D">念念不忘，必有回响</h2>
+<p>这个故障真的是每次温故而能知新啊，随着笔者的经验阅历增加，它就像一座矿，总能从中再挖出新的素材！</p>
+<h1 id="%E6%80%BB%E7%BB%93">总结</h1>
+<p>解决这个问题真的是一波三折。在问题解决过程中，从LVS源码看到Linux 2.6内核对TIME_WAIT状态的处理，再到3.10内核和3.10.0-1127.el7内核之间的细微区别。 为了解释所有的疑点，笔者始终在找寻着各种蛛丝马迹。虽然不追寻这些，问题依旧大概率能够通过各种尝试得到解决。但是，那些奇怪的曲线始终萦绕在笔者心头，让笔者日思夜想。然后，突然灵光乍现，找到线索后顿悟的那种感觉实在是太棒了！这也是笔者解决复杂问题源源不断的动力！</p>
+<p>欢迎大家关注我公众号，里面有各种干货，还有大礼包相送哦!</p>
+<p class="image-only"><img src="/blog/assets/source/image/remote/oscimg.oschina.net/up-2e9a0d2a1798d1fdd8738b1114742015fa1-5397f797ce35.png" alt="image codegen" loading="lazy"></p></div>
+    <nav class="prev-next"><a href="/blog/articles/bug-mysql-seconds-behind-master-f91a1925.html"><small>上一篇</small><span>解Bug之路-MySQL-Seconds_behind_master精度问题引发的思考</span></a><a href="/blog/articles/bug-nginx-502-bad-gateway-a95af6ef.html"><small>下一篇</small><span>解Bug之路-Nginx 502 Bad Gateway</span></a></nav>
+  </article>
+  <aside class="article-related">
+    <h2>同类文章</h2><a href="/blog/articles/bug-key-c35d61ac.html">解Bug之路-隔离故障点后业务不恢复?-热点Key处理与亚稳态故障</a>
+<a href="/blog/articles/bug-with-ai-909a31ae.html">解Bug之路-with AI-应用被限流？</a>
+<a href="/blog/articles/bug-999-3fc4d0f3.html">解Bug之路-应用999线升高</a>
+<a href="/blog/articles/bug-mysql-seconds-behind-master-f91a1925.html">解Bug之路-MySQL-Seconds_behind_master精度问题引发的思考</a>
+<a href="/blog/articles/bug-zookeeper-1b26955c.html">解Bug之路-ZooKeeper集群拒绝服务</a>
+<a href="/blog/articles/bug-9ac0cd85.html">解Bug之路-主从切换&quot;未成功&quot;?</a>
+<a href="/blog/articles/bug-tcp-bug-d2a0b4b0.html">解Bug之路-TCP使用不当引起的Bug</a>
+<a href="/blog/articles/bug-6995f45c.html">解Bug之路-记一次线上请求偶尔变慢的排查</a>
+<a href="/blog/articles/bug-nginx-502-bad-gateway-a95af6ef.html">解Bug之路-Nginx 502 Bad Gateway</a>
+<a href="/blog/articles/bug-sql-64530c9f.html">解Bug之路-中间件&quot;SQL重复执行&quot;</a>
+<a href="/blog/articles/bug-c0b96e67.html">解Bug之路-记一次调用外网服务概率性失败问题的排查</a>
+<a href="/blog/articles/bug-9db7e3e3.html">解Bug之路-记一次存储故障的排查过程</a>
+<a href="/blog/articles/bug-dubbo-zookeeper-29ed9784.html">解Bug之路-dubbo应用无法重连zookeeper</a>
+<a href="/blog/articles/bug-dubbo-cac59f88.html">解Bug之路-dubbo流量上线时的非平滑问题</a>
+<a href="/blog/articles/bug-sql-f1e2ba02.html">解Bug之路-记一次中间件导致的慢SQL排查过程</a>
+<a href="/blog/articles/bug-kernel-tcp-caa0286b.html">解Bug之路-记一次对端ke
+  </aside>
+</main>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, securityLevel: "loose" });
+</script>
+</body>
+</html>

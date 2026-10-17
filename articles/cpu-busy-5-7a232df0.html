@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="核心反常点：同应用同流量下部分机器 CPU.busy 高出 5 倍，接口 QPS、消息量和定时任务都对不上，最后发现是监控采样点位差异制造的假负载不均。">
+  <title>日常问题排查-同应用同流量，为什么CPU.busy差了 5 倍？ - 苍天环绕的小世界</title>
+  <link rel="stylesheet" href="/blog/assets/site.css?v=20261007-contact-page">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="/blog/">苍天环绕的小世界</a>
+  <nav><a href="/blog/">首页</a><a class="nav-featured" href="/blog/featured.html">精品阅读</a><a href="/blog/#articles">文章</a><a href="/blog/contact.html">联系我</a></nav>
+</header>
+<main class="article-layout">
+  <aside class="article-aside">
+    <a class="back-link" href="/blog/">返回首页</a>
+    <div class="toc"><h2>目录</h2><a class="toc-level-1" href="#%E6%97%A5%E5%B8%B8%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5-%E5%90%8C%E5%BA%94%E7%94%A8%E5%90%8C%E6%B5%81%E9%87%8F-%E4%B8%BA%E4%BB%80%E4%B9%88cpu-busy%E5%B7%AE%E4%BA%86-5-%E5%80%8D">日常问题排查-同应用同流量，为什么CPU.busy差了 5 倍？</a>
+<a class="toc-level-1" href="#1-%E5%89%8D%E8%A8%80">1.前言</a>
+<a class="toc-level-1" href="#2-%E9%97%AE%E9%A2%98%E7%8E%B0%E8%B1%A1">2.问题现象</a>
+<a class="toc-level-1" href="#3-%E9%97%AE%E9%A2%98%E5%88%86%E6%9E%90">3.问题分析</a>
+<a class="toc-level-2" href="#3-1%E5%85%88%E7%9C%8B%E6%8E%A5%E5%8F%A3qps">3.1先看接口QPS</a>
+<a class="toc-level-2" href="#3-2%E5%86%8D%E7%9C%8Bmafka">3.2再看Mafka</a>
+<a class="toc-level-2" href="#3-3%E5%86%8D%E7%9C%8B%E5%AE%9A%E6%97%B6%E4%BB%BB%E5%8A%A1">3.3再看定时任务</a>
+<a class="toc-level-2" href="#3-4%E6%95%B0%E6%8D%AE%E4%B8%8D%E5%9D%87">3.4数据不均</a>
+<a class="toc-level-2" href="#3-5-%E5%85%B6%E5%AE%83%E8%BF%9B%E7%A8%8B">3.5 其它进程</a>
+<a class="toc-level-2" href="#3-6-%E7%9B%91%E6%8E%A7%E5%AF%B9%E4%B8%8D%E4%B8%8A">3.6 监控对不上</a>
+<a class="toc-level-2" href="#3-7-cpu-busy%E8%AE%A1%E7%AE%97%E6%98%AF%E4%B8%8D%E6%98%AF%E6%9C%89%E9%97%AE%E9%A2%98">3.7 CPU.busy计算是不是有问题?</a>
+<a class="toc-level-2" href="#3-8-10%E7%A7%92%E7%BA%A7cpu-busy%E6%8C%87%E6%A0%87">3.8 10秒级CPU.busy指标</a>
+<a class="toc-level-1" href="#4-%E6%95%B0%E6%8D%AE%E8%A7%A3%E9%87%8A">4.数据解释</a>
+<a class="toc-level-2" href="#4-1-%E4%B8%A4%E5%8F%B0%E6%9C%BA%E5%99%A8%E4%B8%BA%E4%BB%80%E4%B9%88cpu%E6%B6%88%E8%80%97%E4%B8%8D%E4%B8%80%E6%A0%B7">4.1 两台机器为什么CPU消耗不一样</a>
+<a class="toc-level-2" href="#4-2-%E4%B8%BA%E4%BB%80%E4%B9%88java%E8%BF%9B%E7%A8%8Bcpu%E6%B6%88%E8%80%97%E4%B8%80%E6%A0%B7">4.2 为什么java进程CPU消耗一样</a>
+<a class="toc-level-2" href="#4-3-%E4%B8%BA%E4%BB%80%E4%B9%88cpu%E9%AB%98%E7%9A%84%E6%9C%BA%E5%99%A8%E4%B8%80%E7%9B%B4%E9%AB%98">4.3 为什么CPU高的机器一直高</a>
+<a class="toc-level-2" href="#4-4-%E4%B8%BA%E4%BB%80%E4%B9%88load%E4%B8%80%E6%A0%B7">4.4 为什么load一样</a>
+<a class="toc-level-1" href="#5-%E6%80%BB%E7%BB%93">5.总结</a></div>
+  </aside>
+  <article class="article">
+    <header class="article-title">
+      <div class="meta"><span>日常问题排查</span><time>2026.07.12</time><span>4 min read</span></div>
+      <h1>日常问题排查-同应用同流量，为什么CPU.busy差了 5 倍？</h1>
+      <p>核心反常点：同应用同流量下部分机器 CPU.busy 高出 5 倍，接口 QPS、消息量和定时任务都对不上，最后发现是监控采样点位差异制造的假负载不均。</p>
+    </header>
+    <div class="prose"><h1 id="%E6%97%A5%E5%B8%B8%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5-%E5%90%8C%E5%BA%94%E7%94%A8%E5%90%8C%E6%B5%81%E9%87%8F-%E4%B8%BA%E4%BB%80%E4%B9%88cpu-busy%E5%B7%AE%E4%BA%86-5-%E5%80%8D">日常问题排查-同应用同流量，为什么CPU.busy差了 5 倍？</h1>
+<h1 id="1-%E5%89%8D%E8%A8%80">1.前言</h1>
+<p>日常问题排查系列都是一些简单Bug的排查。在分享的同时也积累素材，方便我的AI分身蒸馏^_^。</p>
+<h1 id="2-%E9%97%AE%E9%A2%98%E7%8E%B0%E8%B1%A1">2.问题现象</h1>
+<p>在容灾演练的时候，为了验证当前单元能够承载所有的线上流量，我们会将另一个互备单元的所有流量调拨过来过一个高峰期来验证。在收集验证数据的过程中，我们的虾反馈: A应用一共20台机器，有3台CPU明显偏高达到了50%而其余的只是在10-20%之间波动，提示负载不均衡需要重点关注。笔者挑了两台监控对比，如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/remote/blog-image-1256443715.cos.ap-guangzhou.myqcloud.com/2026-06-29-143113-6d5e1f06d170.png" alt="" loading="lazy"></p>
+<h1 id="3-%E9%97%AE%E9%A2%98%E5%88%86%E6%9E%90">3.问题分析</h1>
+<p>既然虾都提示负载不均衡了，那我们就直接按照虾的指示排查吧。</p>
+<h2 id="3-1%E5%85%88%E7%9C%8B%E6%8E%A5%E5%8F%A3qps">3.1先看接口QPS</h2>
+<p>于是笔者去监控平台上看了下这两台机器(机器1和机器2)，这两台机器的QPS基本一样，甚至机器1略小于机器2的QPS。</p>
+<h2 id="3-2%E5%86%8D%E7%9C%8Bmafka">3.2再看Mafka</h2>
+<p>同样的，Mafka的消费速率也是一样。</p>
+<h2 id="3-3%E5%86%8D%E7%9C%8B%E5%AE%9A%E6%97%B6%E4%BB%BB%E5%8A%A1">3.3再看定时任务</h2>
+<p>那么会不会是CPU高的机器上跑了定时任务，其它机器没跑呢？带着疑问，笔者去翻了下进程的定时任务。确实有，但每台机器都有的。那么会不会是不同机器在同样的定时任务下处理了不同数量的数据呢？</p>
+<h2 id="3-4%E6%95%B0%E6%8D%AE%E4%B8%8D%E5%9D%87">3.4数据不均</h2>
+<p>于是笔者翻了下这个应用的源代码，发现它需要从数据库里面获取订单数据来进行比对。自然的，就去翻这个应用每台机器对于SQL的QPS。发现两台机器依旧没啥区别。不过SQL QPS没啥区别不代表SQL返回的Row行数没啥区别，这点监控上没有精确的表达。于是笔者就想到去翻JVM younggc和fullgc的情况，如果行数多，gc肯定更加频繁一点，没想到还是没啥区别。</p>
+<h2 id="3-5-%E5%85%B6%E5%AE%83%E8%BF%9B%E7%A8%8B">3.5 其它进程</h2>
+<p>额，那笔者不得不怀疑有其它进程了。要么直接看java应用占了多少CPU吧。看了一下，发现这两台机器的CPU占用是一致的，都是20%左右。就是其它进程的锅了，于是笔者看了一圈监控上当台机器其它进程的监控，并没有发现占用CPU高的。</p>
+<h2 id="3-6-%E7%9B%91%E6%8E%A7%E5%AF%B9%E4%B8%8D%E4%B8%8A">3.6 监控对不上</h2>
+<p>如果我们假设有其它进程会耗大量的CPU，当CPU.busy达到50%的时候，应用的耗时以及cpu本身load的计算肯定要反应出来。但是，奇怪的是，高CPU机器的耗时非常正常，load也和低CPU机器一模一样。</p>
+<h2 id="3-7-cpu-busy%E8%AE%A1%E7%AE%97%E6%98%AF%E4%B8%8D%E6%98%AF%E6%9C%89%E9%97%AE%E9%A2%98">3.7 CPU.busy计算是不是有问题?</h2>
+<p>在上面的数据观察之后，笔者就感觉，这两台机器好像负载是一模一样的，其它所有的指标都在证明着点，而且机器上的应用没有任何耗时上的差异。是不是CPU.busy计算错了？或者说我对于CPU.busy解读错了？于是翻了一下计算这玩意的源代码:</p>
+<pre><code class="language-">每分钟采样一次
+CPU.busy = (当前采样时刻容器累计 CPU 时间 - 1 秒前容器累计 CPU 时间) / 1s</code></pre>
+<p>好了，这个 CPU 指标是每分钟采样一次。。而且每分钟只采样那一秒的CPU。笔者看到的一瞬间就知道了，这又是一个监控的采样问题。</p>
+<h2 id="3-8-10%E7%A7%92%E7%BA%A7cpu-busy%E6%8C%87%E6%A0%87">3.8 10秒级CPU.busy指标</h2>
+<p>还好我们有10秒级的CPU.busy指标，于是笔者翻了一下。发现一旦到了10秒级，CPU.busy的表现是完全一致的。这两台机器都是在前一个10s内CPU到50%，后一个10s内CPU到10%。那么监控的矛盾就很清楚了，不同机器的采样时间是不一样的。采样点在50% CPU时间内采样监控就是50%，在10% CPU时间内采样监控就是10%。两台负载一模一样的机器，由于采样点的不同，而在监控上反映出了完全不同的读数。如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/remote/blog-image-1256443715.cos.ap-guangzhou.myqcloud.com/2026-06-29-143003-9665238e7129.png" alt="" loading="lazy"></p>
+<h1 id="4-%E6%95%B0%E6%8D%AE%E8%A7%A3%E9%87%8A">4.数据解释</h1>
+<h2 id="4-1-%E4%B8%A4%E5%8F%B0%E6%9C%BA%E5%99%A8%E4%B8%BA%E4%BB%80%E4%B9%88cpu%E6%B6%88%E8%80%97%E4%B8%8D%E4%B8%80%E6%A0%B7">4.1 两台机器为什么CPU消耗不一样</h2>
+<p>刚才已经解释了。两台同样负载的机器，采样的时间点不一样，一个是每分钟内CPU 50%时候采样的，一个是每分钟内CPU 10%采样的。在监控看来自然是不同的CPU.busy。</p>
+<h2 id="4-2-%E4%B8%BA%E4%BB%80%E4%B9%88java%E8%BF%9B%E7%A8%8Bcpu%E6%B6%88%E8%80%97%E4%B8%80%E6%A0%B7">4.2 为什么java进程CPU消耗一样</h2>
+<p>监控中对于Java进程CPU的计算方式为:</p>
+<pre><code class="language-">proc.cpu/java= (进程当前运行总时间-进程上一秒运行总时间)/60s</code></pre>
+<p>这个就和上面容器的cpu.busy不一样了。虽然都是每分钟取一个点，但是一个取的是1s内的均值，一个是1min内的均值。这就导致了容器的CPU.busy会随采样时间点而不一致，而Java进程CPU消耗不会。也就是说:</p>
+<pre><code class="language-">容器 CPU.busy：分钟级，但只看某1秒
+Java proc.cpu：分钟级，但看过去60秒平均</code></pre>
+<p>那为什么是20%左右呢，那笔者详细的看了一下监控个数据。实际情况要更加复杂，CPU监控的取点是9，50，18，9如此循环，计算下来平均确实是20%左右。这也解释了，为啥20台有3台会有问题，因为4个点只有一个点高，25%的计算下来是5台，但机器太少无法精确的平均分布，3台属于可接受范围。</p>
+<h2 id="4-3-%E4%B8%BA%E4%BB%80%E4%B9%88cpu%E9%AB%98%E7%9A%84%E6%9C%BA%E5%99%A8%E4%B8%80%E7%9B%B4%E9%AB%98">4.3 为什么CPU高的机器一直高</h2>
+<p>因为每台机器的采样间隔是一致的。区别只在于监控系统什么时候去采集，不同机器采集的分钟内秒数不同，但同一台机器基本都是按照一分钟的间隔去采集的。机器1一直采样到50%，机器2一直采样到10%</p>
+<h2 id="4-4-%E4%B8%BA%E4%BB%80%E4%B9%88load%E4%B8%80%E6%A0%B7">4.4 为什么load一样</h2>
+<p>Linux的load计算是5s一次并且按照指数平滑的，在这个case下，也没有采样点的问题。当然了，笔者遇到过一个更诡异的load采样的问题，以后有机会可以写下。</p>
+<h1 id="5-%E6%80%BB%E7%BB%93">5.总结</h1>
+<p>监控指标本身也是受各种因素影响的，采样的时间点/精度/范围等都会影响指标的计算。当指标间出现矛盾时，往往要考虑某些指标本身有问题。这个问题并不是一开始以为的负载不均衡，而是由于监控点位的不同对同样的CPU负载做出了不同的反映。这也又回到之前笔者写的那篇《闲聊监控指标的局限》所想要表达的主题---监控指标反映的只是真实的投影。</p>
+<p class="image-only"><img src="/blog/assets/source/image/remote/blog-image-1256443715.cos.ap-guangzhou.myqcloud.com/2026-06-29-144403-b06490aaad39.png" alt="" loading="lazy"></p></div>
+    <nav class="prev-next"><a href="/blog/articles/post-a12062b0.html"><small>上一篇</small><span>日常问题排查-偶发性读数据不一致</span></a><a href="/blog/articles/dns-5b7836f2.html"><small>下一篇</small><span>日常问题排查-奇怪的DNS</span></a></nav>
+  </article>
+  <aside class="article-related">
+    <h2>同类文章</h2><a href="/blog/articles/younggc-84c79a21.html">日常问题排查-Younggc突然变长</a>
+<a href="/blog/articles/post-ce618c61.html">日常问题排查-空闲一段时间再请求就超时</a>
+<a href="/blog/articles/dns-5b7836f2.html">日常问题排查-奇怪的DNS</a>
+<a href="/blog/articles/post-a12062b0.html">日常问题排查-偶发性读数据不一致</a>
+<a href="/blog/articles/mvcc-for-update-6ea5409f.html">日常问题排查-MVCC和for update混用导致读数据不一致</a>
+<a href="/blog/articles/post-0abe94ca.html">日常问题排查-改表时读数据不一致</a>
+<a href="/blog/articles/post-df9748ee.html">日常问题排查-连接突然全部关闭</a>
+<a href="/blog/articles/post-625093a1.html">日常问题排查-集群逐步失去响应</a>
+<a href="/blog/articles/mq-a6fe4c2d.html">日常问题排查-mq不消费</a>
+<a href="/blog/articles/post-aba46ada.html">日常问题排查-读从库没有原子性？</a>
+<a href="/blog/articles/redis-d4ca6a5a.html">日常问题排查-系统失去响应-Redis使用不当</a>
+<a href="/blog/articles/post-e443a4a8.html">日常问题排查-请求偶尔超时-磁盘故障</a>
+<a href="/blog/articles/post-ff1bd808.html">日常问题排查-调用超时</a>
+  </aside>
+</main>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, securityLevel: "loose" });
+</script>
+</body>
+</html>

@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="核心反常点：应用节点不是同时宕掉，而是 BusyThread 从发布后持续增长直到逐台摘除，根因藏在 Guava Cache 异步加载和永远不会完成的 Future。">
+  <title>日常问题排查-集群逐步失去响应 - 苍天环绕的小世界</title>
+  <link rel="stylesheet" href="/blog/assets/site.css?v=20261007-contact-page">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="/blog/">苍天环绕的小世界</a>
+  <nav><a href="/blog/">首页</a><a class="nav-featured" href="/blog/featured.html">精品阅读</a><a href="/blog/#articles">文章</a><a href="/blog/contact.html">联系我</a></nav>
+</header>
+<main class="article-layout">
+  <aside class="article-aside">
+    <a class="back-link" href="/blog/">返回首页</a>
+    <div class="toc"><h2>目录</h2><a class="toc-level-1" href="#%E6%97%A5%E5%B8%B8%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5-%E9%9B%86%E7%BE%A4%E9%80%90%E6%AD%A5%E5%A4%B1%E5%8E%BB%E5%93%8D%E5%BA%94">日常问题排查-集群逐步失去响应</a>
+<a class="toc-level-1" href="#%E5%89%8D%E8%A8%80">前言</a>
+<a class="toc-level-1" href="#bug%E7%8E%B0%E5%9C%BA">Bug现场</a>
+<a class="toc-level-1" href="#%E7%BA%BF%E7%A8%8B%E9%80%90%E6%AD%A5%E8%80%97%E5%B0%BD">线程逐步耗尽</a>
+<a class="toc-level-1" href="#%E6%9F%A5%E7%9C%8B%E7%BA%BF%E7%A8%8B%E6%A0%88">查看线程栈</a>
+<a class="toc-level-1" href="#%E4%BB%8Eguavacache%E8%8E%B7%E5%8F%96%E7%BC%93%E5%AD%98%E4%B8%BA%E4%BB%80%E4%B9%88%E4%BC%9A%E8%A2%AB%E5%8D%A1%E4%BD%8F">从GuavaCache获取缓存为什么会被卡住</a>
+<a class="toc-level-1" href="#%E6%97%A5%E5%BF%97">日志</a>
+<a class="toc-level-2" href="#%E5%AF%B9%E5%BA%94%E6%97%B6%E9%97%B4%E7%82%B9%E6%97%A5%E5%BF%97%E7%A9%BA%E7%A9%BA%E5%A6%82%E4%B9%9F">对应时间点日志空空如也</a>
+<a class="toc-level-2" href="#%E5%BC%82%E6%AD%A5%E7%BC%93%E5%AD%98%E7%9A%84%E6%97%A5%E5%BF%97">异步缓存的日志</a>
+<a class="toc-level-2" href="#%E7%BB%A7%E7%BB%AD%E5%BE%80%E5%89%8D%E8%BF%BD%E6%BA%AF">继续往前追溯</a>
+<a class="toc-level-2" href="#%E4%B8%BA%E4%BB%80%E4%B9%88%E4%BC%9A%E8%A7%A6%E5%8F%91%E7%BA%BF%E7%A8%8B%E6%B1%A0%E6%8B%92%E7%BB%9D%E7%AD%96%E7%95%A5">为什么会触发线程池拒绝策略</a>
+<a class="toc-level-1" href="#%E6%BA%90%E7%A0%81%E5%88%86%E6%9E%90">源码分析</a>
+<a class="toc-level-1" href="#%E4%B8%BA%E4%BB%80%E4%B9%88%E6%B2%A1%E6%9C%89%E7%9B%B4%E6%8E%A5%E8%BF%94%E5%9B%9Eoldvalue%E8%80%8C%E6%98%AF%E5%8D%A1%E4%BD%8F">为什么没有直接返回oldValue而是卡住</a>
+<a class="toc-level-1" href="#%E4%BB%80%E4%B9%88%E6%98%AF%E9%80%90%E6%B8%90%E5%A4%B1%E5%8E%BB%E5%93%8D%E5%BA%94">什么是逐渐失去响应</a>
+<a class="toc-level-1" href="#%E6%80%BB%E7%BB%93">总结</a></div>
+  </aside>
+  <article class="article">
+    <header class="article-title">
+      <div class="meta"><span>日常问题排查</span><time>2024.01.13</time><span>5 min read</span></div>
+      <h1>日常问题排查-集群逐步失去响应</h1>
+      <p>核心反常点：应用节点不是同时宕掉，而是 BusyThread 从发布后持续增长直到逐台摘除，根因藏在 Guava Cache 异步加载和永远不会完成的 Future。</p>
+    </header>
+    <div class="prose"><h1 id="%E6%97%A5%E5%B8%B8%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5-%E9%9B%86%E7%BE%A4%E9%80%90%E6%AD%A5%E5%A4%B1%E5%8E%BB%E5%93%8D%E5%BA%94">日常问题排查-集群逐步失去响应</h1>
+<h1 id="%E5%89%8D%E8%A8%80">前言</h1>
+<p>日常问题排查系列都是一些简单问题排查。笔者将在这里介绍一些排查Bug的简单技巧，同时顺便积累素材^_^</p>
+<h1 id="bug%E7%8E%B0%E5%9C%BA">Bug现场</h1>
+<p>最近碰到一个产线问题，表现为某个应用集群所有的节点全部下线了。导致上游调用全部报错。而且从时间线分析来看。这个应用的节点是逐步失去响应的。因为请求量较小，直到最后一台也失去响应后，才发现这个集群有问题。</p>
+<p class="image-only"><img src="/blog/assets/source/image/lost_connect/slow_lost_connect.png" alt="" loading="lazy"></p>
+<h1 id="%E7%BA%BF%E7%A8%8B%E9%80%90%E6%AD%A5%E8%80%97%E5%B0%BD">线程逐步耗尽</h1>
+<p>笔者观察了下监控，发现每台机器的BusyThread从上次发布开始就逐步增长，一直到BusyThread线程数达到200才停止，而这个时间和每台机器从注册中心中摘除的时间相同。看了下代码，其配置的最大处理请求线程数就是200。</p>
+<p class="image-only"><img src="/blog/assets/source/image/lost_connect/busy_threads.png" alt="" loading="lazy"></p>
+<h1 id="%E6%9F%A5%E7%9C%8B%E7%BA%BF%E7%A8%8B%E6%A0%88">查看线程栈</h1>
+<p>很容易的，我们就想到去观察相关机器的线程栈。发现其所有的的请求处理线程全部Block在com.google.common.util.concurrent.SettableFuture的不同实例上。卡住的堆栈如下所示：</p>
+<pre><code class="language-">
+at sun.misc.Unsafe.park (Native Method: )
+at java.util.concurrent.locks.LockSupport.park (LockSupport.java: 175)
+at com.google.common.util.concurrent.AbstractFuture.get (AbstractFuture.java: 469)
+at com.google.common.util.concurrent.AbstractFuture$TrustedFuture.get (AbstractFuture.java: 76)
+at com.google.common.util.concurrent.Uninterruptibles.getUninterruptibly (Uninterruptibles.java: 142)
+at com.google.common.cache.LocalCache$LoadingValueReference.waitForValue (LocalCache.java: 3661)
+at com.google.common.cache.LocalCache$Segment.waitForLoadingValue (LocalCache.java: 2315)
+at com.google.common.cache.LocalCache$Segment.get (LocalCache.java: 2202)
+at com.google.common.cache.LocalCache.get (LocalCache.java: 4053)
+at com.google.common.cache.LocalCache.getOrLoad (LocalCache.java: 4057)
+at com.google.common.cache.LocalCache$LocalLoadingCache.get (LocalCache.java: 4986)
+at com.google.common.cache.ForwardingLoadingCache.get (ForwardingLoadingCache.java: 45)
+at com.google.common.cache.ForwardingLoadingCache.get (ForwardingLoadingCache.java: 45)
+at com.google.common.cache.ForwardingLoadingCache.get
+......
+at com.XXX.business.getCache
+......</code></pre>
+<p class="image-only"><img src="/blog/assets/source/image/lost_connect/all_thread_stuck.png" alt="" loading="lazy"></p>
+<h1 id="%E4%BB%8Eguavacache%E8%8E%B7%E5%8F%96%E7%BC%93%E5%AD%98%E4%B8%BA%E4%BB%80%E4%B9%88%E4%BC%9A%E8%A2%AB%E5%8D%A1%E4%BD%8F">从GuavaCache获取缓存为什么会被卡住</h1>
+<p>GuavaCache是一个非常成熟的组件了，为什么会卡住呢？使用的姿势不对？于是，笔者翻了翻使用GuavaCache的源代码。其简化如下：</p>
+<pre><code class="language-">private void initCache() {
+    ExecutorService executor  =  new ThreadPoolExecutor(1, 1,
+            60, TimeUnit.SECONDS,
+            new ArrayBlockingQueue&lt;&gt;(50), // 注意这个QueueSize
+            new NamedThreadFactory(String.format(&quot;cache-reload-%s&quot;)),
+            (r, e) -&gt; {
+                log.warn(&quot;cache reload rejected by threadpool!&quot;); // 注意这个reject策略
+
+            });
+    this.executorService = MoreExecutors.listeningDecorator(executor);
+    cache = CacheBuilder.newBuilder().maximumSize(100) // 注意这个最大值
+        .refreshAfterWrite(1, TimeUnit.DAYS).build(new CacheLoader&lt;K, V&gt;() {
+            @Override
+            public V load(K key) throws Exception {
+                return innerLoad(key);
+            }
+
+            @Override
+            public ListenableFuture&lt;V&gt; reload(K key, V oldValue) throws Exception {
+                ListenableFuture&lt;V&gt; task = executorService.submit(() -&gt; {
+                    try {
+                        return innerLoad(key);
+                    } catch (Exception e) {
+                        LogUtils.printErrorLog(e, String.format(&quot;重新加载缓存失败,key:%s&quot;, key));
+                        return oldValue;
+                    }
+                });
+                return task;
+            }
+        });
+}
+</code></pre>
+<p>这段代码事实上写的还是不错的，其通过重载reload方法并在加载后段缓存出问题的时候使用old Value。保证了即使获取缓存的后段存储出问题了，依旧不会影响到我们缓存的获取。逻辑如下所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/lost_connect/cache_logic.png" alt="" loading="lazy"></p>
+<p>那么为什么会卡住呢？一时间看不出什么问题。那么我们就可以从系统的日志中去寻找蛛丝马迹。</p>
+<h1 id="%E6%97%A5%E5%BF%97">日志</h1>
+<h2 id="%E5%AF%B9%E5%BA%94%E6%97%B6%E9%97%B4%E7%82%B9%E6%97%A5%E5%BF%97%E7%A9%BA%E7%A9%BA%E5%A6%82%E4%B9%9F">对应时间点日志空空如也</h2>
+<p>对于这种逐渐失去响应的，我们寻找日志的时候一般去寻找源头。也就是第一次出现卡在SettableFuture的时候发生了什么。由于我们做了定时的线程栈采集，那么很容易的，笔者挑了一台机器找到了3天之前第一次发生线程卡住的时候，grep下对应的线程名，只发现了一个请求过来到了这个线程然后卡住了，后面就什么日志都不输出了。</p>
+<h2 id="%E5%BC%82%E6%AD%A5%E7%BC%93%E5%AD%98%E7%9A%84%E6%97%A5%E5%BF%97">异步缓存的日志</h2>
+<p>继续回顾上面的代码，代码中缓存的刷新是异步执行的，很有可能是异步执行的时候出错了。再grep异步执行的相关关键词“重新加载缓存失败”，依旧什么都没有。线索又断了。</p>
+<h2 id="%E7%BB%A7%E7%BB%AD%E5%BE%80%E5%89%8D%E8%BF%BD%E6%BA%AF">继续往前追溯</h2>
+<p>当所有线索都断了的情况下，我们可以翻看时间点前后的整体日志，看下有没有异常的点以获取灵感。往前多翻了一天的日志，然后一条线程池请求被拒绝的日志进入了笔者的视野。</p>
+<pre><code class="language-">cache reload rejected by threadpool!</code></pre>
+<p>看到这条日志的一瞬间，笔者立马就想明白了。GuavaCache的reload请求不是出错了，而是被线程池给丢了。在reload请求完成之后，GuavaCache会对相应的SettableFuture做done的动作以唤醒等待的线程。而由于我们的Reject策略只打印了日志，并没有做done的动作，导致我们请求Cache的线程一直在卡waitForValue上面。如下图所示，左边的是正常情况，右边的是异常情况。</p>
+<p class="image-only"><img src="/blog/assets/source/image/lost_connect/not_done.png" alt="" loading="lazy"></p>
+<h2 id="%E4%B8%BA%E4%BB%80%E4%B9%88%E4%BC%9A%E8%A7%A6%E5%8F%91%E7%BA%BF%E7%A8%8B%E6%B1%A0%E6%8B%92%E7%BB%9D%E7%AD%96%E7%95%A5">为什么会触发线程池拒绝策略</h2>
+<p>注意我们初始化线程池的源代码</p>
+<pre><code class="language-">    ExecutorService executor  =  new ThreadPoolExecutor(1, 1,
+            60, TimeUnit.SECONDS,
+            new ArrayBlockingQueue&lt;&gt;(50), // 注意这个QueueSize
+            new NamedThreadFactory(String.format(&quot;cache-reload-%s&quot;)),
+            (r, e) -&gt; {
+                log.warn(&quot;cache reload rejected by threadpool!&quot;); // 注意这个reject策略
+
+            });</code></pre>
+<p>这个线程池是个单线程线程池，而且Queue只有50，一旦遇到同时过来的请求大于50个，就很容易触发拒绝策略。</p>
+<h1 id="%E6%BA%90%E7%A0%81%E5%88%86%E6%9E%90">源码分析</h1>
+<p>好了，这时候我们就可以上一下GuavaCache的源代码了。</p>
+<pre><code class="language-">   V get(K key, int hash, CacheLoader&lt;? super K, V&gt; loader) throws ExecutionException {
+      checkNotNull(key);
+      checkNotNull(loader);
+      try {
+        if (count != 0) { // read-volatile
+          // don&#x27;t call getLiveEntry, which would ignore loading values
+          ReferenceEntry&lt;K, V&gt; e = getEntry(key, hash);
+          if (e != null) {
+            long now = map.ticker.read();
+            V value = getLiveValue(e, now);
+            if (value != null) {
+              recordRead(e, now);
+              statsCounter.recordHits(1);
+              // scheduleRefresh中一旦Value不为null，就直接返回旧值
+              return scheduleRefresh(e, key, hash, value, now, loader);
+            }
+            ValueReference&lt;K, V&gt; valueReference = e.getValueReference();
+            // 如果当前Value还在loading，则等loading完毕
+            if (valueReference.isLoading()) {
+            	 // 这次的Bug就一直卡在loadingValue上
+              return waitForLoadingValue(e, key, valueReference);
+            }
+          }
+        }
+
+        // at this point e is either null or expired;
+        return lockedGetOrLoad(key, hash, loader);
+      } catch (ExecutionException ee) {
+    	......
+    }</code></pre>
+<h1 id="%E4%B8%BA%E4%BB%80%E4%B9%88%E6%B2%A1%E6%9C%89%E7%9B%B4%E6%8E%A5%E8%BF%94%E5%9B%9Eoldvalue%E8%80%8C%E6%98%AF%E5%8D%A1%E4%BD%8F">为什么没有直接返回oldValue而是卡住</h1>
+<p>等等，在上面的GuavaCache源代码里面。一旦缓存有值之后，肯定是立马返回了。对应这段代码。</p>
+<pre><code class="language-">			if (value != null) {
+              recordRead(e, now);
+              statsCounter.recordHits(1);
+              // scheduleRefresh中一旦Value不为null，就直接返回旧值
+              return scheduleRefresh(e, key, hash, value, now, loader);
+            }
+</code></pre>
+<p>所以就算异步刷新请求被线程池Reject掉了。它也不会讲原来缓存中的值给删掉。业务线程也不应该卡住。那么这个卡住是什么原因呢？为什么缓存中没值没有触发load而是等待valueReference有没有加载完毕呢。 稍加思索之后，笔者就找到了原因，因为上述那段代码中设置了缓存的maxSize。一旦超过maxSize，一部分数据就被驱逐掉了，而如果这部分数据恰好就是线程池Reject掉请求的数据，那么就会进值为空同时需要等待valueReference loading的代码分支，从而造成卡住的现象。让我们看一下源代码：</p>
+<pre><code class="language-">localCache.put //
+ |-&gt;evictEntries
+  |-&gt;removeEntry
+   |-&gt;removeValueFromChain
+
+ReferenceEntry&lt;K,V&gt; removeValueFromChain(...) {
+ ......
+ if(valueReference.isLoading()){
+  // 设置原值为null
+  valueReference.notifyNewValue(null);
+  return first;
+ }else {
+  removeEntryFromChain(first,entry) 
+ }
+} </code></pre>
+<p>我们看到，代码中valueReference.isLoading()的判断，一旦当前value还处于加载状态中，那么驱逐的时候只会将对应的entry(key)项设置为null而不会删掉。这样，在下次这个key的缓存被访问的时候自然就走到了value为null的分支，然后就看到当前的valueReference还处于loading状态，最后就会等待那个由于被线程reject而永远不会done的future，最后就会导致这个线程卡住。逻辑如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/lost_connect/evict_block.png" alt="" loading="lazy"></p>
+<h1 id="%E4%BB%80%E4%B9%88%E6%98%AF%E9%80%90%E6%B8%90%E5%A4%B1%E5%8E%BB%E5%93%8D%E5%BA%94">什么是逐渐失去响应</h1>
+<p>因为业务的实际缓存key的项目是大于maxSize的。而一开始系统启动后加载的时候缓存的cache并没有达到最大值，所以这时候被线程池reject掉相应的刷新请求依旧能够返回旧值。但一旦出现了大于缓存cache最大Size的数据导致一些项被驱逐后，只要是一个请求去访问这些缓存项都会被卡住。但很明显的，能够被驱逐出去的旧缓存肯定是不常用的缓存(默认LRU缓存策略)，那么就看这个不常用的数据的流量到底是在哪台机器上最多，那么哪台机器就是最先失去响应的了。</p>
+<h1 id="%E6%80%BB%E7%BB%93">总结</h1>
+<p>虽然这是个较简单的问题，排查的时候也是需要一定的思路的，尤其是发生问题的时间点并往前追溯到第一个不同寻常的日志这个点，这个往往是我们破局的手段。GuavaCache虽然是个使用非常广泛的缓存工具，但不合理的配置依旧会导致灾难性的后果。</p></div>
+    <nav class="prev-next"><a href="/blog/articles/post-df9748ee.html"><small>上一篇</small><span>日常问题排查-连接突然全部关闭</span></a><a href="/blog/articles/c-dbproxy-d9da67e9.html"><small>下一篇</small><span>用C语言撸了个DBProxy</span></a></nav>
+  </article>
+  <aside class="article-related">
+    <h2>同类文章</h2><a href="/blog/articles/younggc-84c79a21.html">日常问题排查-Younggc突然变长</a>
+<a href="/blog/articles/post-ce618c61.html">日常问题排查-空闲一段时间再请求就超时</a>
+<a href="/blog/articles/dns-5b7836f2.html">日常问题排查-奇怪的DNS</a>
+<a href="/blog/articles/post-a12062b0.html">日常问题排查-偶发性读数据不一致</a>
+<a href="/blog/articles/mvcc-for-update-6ea5409f.html">日常问题排查-MVCC和for update混用导致读数据不一致</a>
+<a href="/blog/articles/post-0abe94ca.html">日常问题排查-改表时读数据不一致</a>
+<a href="/blog/articles/post-df9748ee.html">日常问题排查-连接突然全部关闭</a>
+<a href="/blog/articles/mq-a6fe4c2d.html">日常问题排查-mq不消费</a>
+<a href="/blog/articles/post-aba46ada.html">日常问题排查-读从库没有原子性？</a>
+<a href="/blog/articles/redis-d4ca6a5a.html">日常问题排查-系统失去响应-Redis使用不当</a>
+<a href="/blog/articles/post-e443a4a8.html">日常问题排查-请求偶尔超时-磁盘故障</a>
+<a href="/blog/articles/post-ff1bd808.html">日常问题排查-调用超时</a>
+<a href="/blog/articles/cpu-busy-5-7a232df0.html">日常问题排查-同应用同流量，为什么CPU.busy差了 5 倍？</a>
+  </aside>
+</main>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, securityLevel: "loose" });
+</script>
+</body>
+</html>

@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="在阅读了大量关于数据库的资料后，笔者情不自禁产生了一个造数据库轮子的想法。来验证一下自己对于数据库底层原理的掌握是否牢靠。在笔者的github中给这个database起名为Freedom。 既然造轮子，那当然得从前端的网络协议交互到后端的文件存储全部给撸一遍。下面是Freedom实现的整体结构，里面...">
+  <title>自己动手写SQL执行引擎 - 苍天环绕的小世界</title>
+  <link rel="stylesheet" href="/blog/assets/site.css?v=20261007-contact-page">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="/blog/">苍天环绕的小世界</a>
+  <nav><a href="/blog/">首页</a><a class="nav-featured" href="/blog/featured.html">精品阅读</a><a href="/blog/#articles">文章</a><a href="/blog/contact.html">联系我</a></nav>
+</header>
+<main class="article-layout">
+  <aside class="article-aside">
+    <a class="back-link" href="/blog/">返回首页</a>
+    <div class="toc"><h2>目录</h2><a class="toc-level-1" href="#%E8%87%AA%E5%B7%B1%E5%8A%A8%E6%89%8B%E5%86%99sql%E6%89%A7%E8%A1%8C%E5%BC%95%E6%93%8E">自己动手写SQL执行引擎</a>
+<a class="toc-level-2" href="#%E5%89%8D%E8%A8%80">前言</a>
+<a class="toc-level-2" href="#%E6%95%B4%E4%BD%93%E7%BB%93%E6%9E%84">整体结构</a>
+<a class="toc-level-2" href="#mysql-protocol%E7%BB%93%E6%9E%84">MySQL Protocol结构</a>
+<a class="toc-level-3" href="#query-packet">query packet</a>
+<a class="toc-level-3" href="#result-set-packet">result set packet</a>
+<a class="toc-level-3" href="#row-packet">row packet</a>
+<a class="toc-level-2" href="#sql-parse">SQL Parse</a>
+<a class="toc-level-3" href="#%E5%AF%B9where%E7%9A%84%E5%A4%84%E7%90%86">对where的处理</a>
+<a class="toc-level-3" href="#%E5%AF%B9join%E7%9A%84%E5%A4%84%E7%90%86">对join的处理</a>
+<a class="toc-level-3" href="#freedom%E5%AF%B9%E4%BA%8E%E7%BC%A9%E5%B0%8F%E7%AC%9B%E5%8D%A1%E5%B0%94%E7%A7%AF%E7%9A%84%E5%A4%84%E7%90%86">Freedom对于缩小笛卡尔积的处理</a>
+<a class="toc-level-1" href="#b-tree%E7%9A%84%E7%A3%81%E7%9B%98%E7%BB%93%E6%9E%84">B+Tree的磁盘结构</a>
+<a class="toc-level-2" href="#leaf%E7%A3%81%E7%9B%98%E7%BB%93%E6%9E%84">leaf磁盘结构</a>
+<a class="toc-level-3" href="#leaf%E5%92%8Cnode%E8%8A%82%E7%82%B9%E5%9C%A8page%E4%B8%AD%E7%9A%84%E4%B8%8D%E5%90%8C">leaf和node节点在Page中的不同</a>
+<a class="toc-level-3" href="#b-tree%E5%9C%A8%E6%96%87%E4%BB%B6%E4%B8%AD%E7%9A%84%E7%BB%84%E7%BB%87">B+Tree在文件中的组织</a>
+<a class="toc-level-3" href="#%E6%AF%8F%E4%B8%AA%E7%B4%A2%E5%BC%95%E4%B8%80%E4%B8%AAb-%E6%A0%91">每个索引一个B+树</a>
+<a class="toc-level-3" href="#b-tree%E7%9A%84%E6%B5%8B%E8%AF%95">B+Tree的测试</a>
+<a class="toc-level-3" href="#b-tree%E7%9A%84todo">B+Tree的todo</a>
+<a class="toc-level-2" href="#meta-data">Meta Data</a>
+<a class="toc-level-2" href="#%E4%BA%8B%E5%8A%A1%E6%94%AF%E6%8C%81">事务支持</a>
+<a class="toc-level-3" href="#redo-undo-log%E5%8D%8F%E8%AE%AE%E6%A0%BC%E5%BC%8F">redo/undo log协议格式</a>
+<a class="toc-level-3" href="#wal%E5%8D%8F%E8%AE%AE">WAL协议</a>
+<a class="toc-level-3" href="#%E5%9B%9E%E6%BB%9A%E7%9A%84%E5%AE%9E%E7%8E%B0">回滚的实现</a>
+<a class="toc-level-3" href="#%E5%AE%95%E6%9C%BA%E6%81%A2%E5%A4%8D">宕机恢复</a>
+<a class="toc-level-2" href="#freedom%E8%BF%90%E8%A1%8C">Freedom运行</a>
+<a class="toc-level-2" href="#freedom-todo">Freedom todo</a>
+<a class="toc-level-3" href="#mvcc">MVCC</a>
+<a class="toc-level-3" href="#%E4%BA%8C%E9%98%B6%E6%AE%B5%E9%94%81">二阶段锁</a>
+<a class="toc-level-2" href="#%E5%B0%BE%E5%A3%B0">尾声</a>
+<a class="toc-level-2" href="#%E6%94%B6%E8%8E%B7%E4%B8%8E%E9%81%97%E6%86%BE">收获与遗憾</a>
+<a class="toc-level-2" href="#%E5%AD%A6%E4%B9%A0mysql%E8%A7%86%E9%A2%91%E8%AF%BE%E7%A8%8B">学习MySQL视频课程</a>
+<a class="toc-level-2" href="#github%E9%93%BE%E6%8E%A5">github链接</a>
+<a class="toc-level-2" href="#%E7%A0%81%E4%BA%91%E9%93%BE%E6%8E%A5">码云链接</a></div>
+  </aside>
+  <article class="article">
+    <header class="article-title">
+      <div class="meta"><span>自己动手系列</span><time>2020.05.20</time><span>6 min read</span></div>
+      <h1>自己动手写SQL执行引擎</h1>
+      <p>在阅读了大量关于数据库的资料后，笔者情不自禁产生了一个造数据库轮子的想法。来验证一下自己对于数据库底层原理的掌握是否牢靠。在笔者的github中给这个database起名为Freedom。 既然造轮子，那当然得从前端的网络协议交互到后端的文件存储全部给撸一遍。下面是Freedom实现的整体结构，里面...</p>
+    </header>
+    <div class="prose"><h1 id="%E8%87%AA%E5%B7%B1%E5%8A%A8%E6%89%8B%E5%86%99sql%E6%89%A7%E8%A1%8C%E5%BC%95%E6%93%8E">自己动手写SQL执行引擎</h1>
+<h2 id="%E5%89%8D%E8%A8%80">前言</h2>
+<p>在阅读了大量关于数据库的资料后，笔者情不自禁产生了一个造数据库轮子的想法。来验证一下自己对于数据库底层原理的掌握是否牢靠。在笔者的github中给这个database起名为Freedom。</p>
+<h2 id="%E6%95%B4%E4%BD%93%E7%BB%93%E6%9E%84">整体结构</h2>
+<p>既然造轮子，那当然得从前端的网络协议交互到后端的文件存储全部给撸一遍。下面是Freedom实现的整体结构，里面包含了实现的大致模块:</p>
+<p class="image-only"><img src="/blog/assets/source/image/freedom/freedom_arch.png" alt="codegen" loading="lazy"></p>
+<p>最终存储结构当然是使用经典的B+树结构。当然在B+树和文件系统block块之间的转换则通过Buffer(Page) Manager来进行。当然了，为了完成事务，还必须要用WAL协议，其通过Log Manager来操作。 Freedom采用的是索引组织表，通过DruidSQL Parse来将sql翻译为对应的索引操作符进而进行对应的语义操作。</p>
+<h2 id="mysql-protocol%E7%BB%93%E6%9E%84">MySQL Protocol结构</h2>
+<p>client/server之间的交互采用的是MySQL协议，这样很容易就可以和mysql client以及jdbc进行交互了。</p>
+<h3 id="query-packet">query packet</h3>
+<p>mysql通过3byte的定长包头去进行分包，进而解决tcp流的读取问题。再通过一个sequenceId来再应用层判断packet是否连续。</p>
+<p class="image-only"><img src="/blog/assets/source/image/mysqlimage/querypacket.png" alt="image" loading="lazy"></p>
+<h3 id="result-set-packet">result set packet</h3>
+<p>mysql协议部分最复杂的内容是其对于result set的读取，在NIO的方式下加重了复杂性。 Freedom通过设置一系列的读取状态可以比较好的在Netty框架下解决这一问题。</p>
+<p class="image-only"><img src="/blog/assets/source/image/mysqlimage/resultset.png" alt="image" loading="lazy"></p>
+<h3 id="row-packet">row packet</h3>
+<p>还有一个较简单的是对row格式进行读取，如上图所示,只需要按部就班的解析即可。</p>
+<p class="image-only"><img src="/blog/assets/source/image/mysqlimage/rowpacket.png" alt="image" loading="lazy"></p>
+<p>由于协议解析部分较为简单，在这里就不再赘述。</p>
+<h2 id="sql-parse">SQL Parse</h2>
+<p>Freedom采用成熟好用的Druid SQL Parse作为解析器。事实上，解析sql就是将用文本表示 的sql语义表示为一系列操作符(这里限于篇幅原因，仅仅给出select中where过滤的原理)。</p>
+<h3 id="%E5%AF%B9where%E7%9A%84%E5%A4%84%E7%90%86">对where的处理</h3>
+<p>例如where后面的谓词就可以表示为一系列的以树状结构组织的SQL表达式，如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/freedom/sql_where_condition.png" alt="image" loading="lazy"></p>
+<p>当access层通过游标提供一系列row后，就可以通过这个树状表达式来过滤出符合where要求的数据。Druid采用了Parse中常用的visitor很方便的处理上面的表达式计算操作。</p>
+<h3 id="%E5%AF%B9join%E7%9A%84%E5%A4%84%E7%90%86">对join的处理</h3>
+<p>对join最简单处理方案就是对两张表进行笛卡尔积，然后通过上面的where condition进行过滤，如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/freedom/descartes.png" alt="image" loading="lazy"></p>
+<h3 id="freedom%E5%AF%B9%E4%BA%8E%E7%BC%A9%E5%B0%8F%E7%AC%9B%E5%8D%A1%E5%B0%94%E7%A7%AF%E7%9A%84%E5%A4%84%E7%90%86">Freedom对于缩小笛卡尔积的处理</h3>
+<p>由于Freedom采用的是B+树作为底层存储结构，所以可以通过where谓词来界定B+树scan(搜索)的范围(也即最大搜索key和最小搜索key在B+树种中的位置)。考虑sql</p>
+<pre><code class="language-">select a.*,b.* from t_archer as a join t_rider as b where a.id&gt;=3 and a.id&lt;=11 b.id and b.id&gt;=19 b.id&lt;=31</code></pre>
+<p>那么就可以界定出在id这个索引上,a的scan范围为[3,11],如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/freedom/t_archer_bp.png" alt="image" loading="lazy"></p>
+<p>b的scan范围为[19,31],如下图所示(假设两张表数据一样，便于绘图):</p>
+<p class="image-only"><img src="/blog/assets/source/image/freedom/bp_tree_rider.png" alt="image" loading="lazy"></p>
+<p>scan少了从原来的15*15(一共15个元素)次循环减少到4*4次循环,即循环次数减少到7.1%</p>
+<p>当然如果存在join condition的话，那么Freedom在底层cursor递归处理的过程中会预先过滤掉一部分数据，进一步减少上层的过滤。</p>
+<h1 id="b-tree%E7%9A%84%E7%A3%81%E7%9B%98%E7%BB%93%E6%9E%84">B+Tree的磁盘结构</h1>
+<h2 id="leaf%E7%A3%81%E7%9B%98%E7%BB%93%E6%9E%84">leaf磁盘结构</h2>
+<p>Freedom的B+Tree是存储到磁盘里的。考虑到存储的限制以及不定长的key值，所以会变得非常复杂。Freedom以page为单位来和磁盘进行交互。叶子节点和非叶子节点都由page承载并刷入磁盘。结构如下所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/freedom/page_struct.png" alt="image" loading="lazy"></p>
+<p>一个元组(tuple/item)在一个page中分为定长的ItemPointer和不定长的Item两部分。 其中ItemPointer里面存储了对应item的起始偏移和长度。同时ItemPointer和Item如图所示是向着中心方向进行伸张，这种结构很有效的组织了非定长Item。</p>
+<h3 id="leaf%E5%92%8Cnode%E8%8A%82%E7%82%B9%E5%9C%A8page%E4%B8%AD%E7%9A%84%E4%B8%8D%E5%90%8C">leaf和node节点在Page中的不同</h3>
+<p>虽然leaf和node在page中组织结构一致，但其item包含的项确有区别。由于Freedom采用的是索引组织表，所以对于leaf在聚簇索引(clusterIndex)和二级索引(secondaryIndex)中对item的表示也有区别,如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/freedom/index_leaf_node_page_struct.png" alt="image" loading="lazy"></p>
+<p>其中在二级索引搜索时通过secondaryIndex通过index-key找到对应的clusterId,再通过 clusterId在clusterIndex中找到对应的row记录。 由于要落盘，所以Freedom在node节点中的item里面写入了index-key对应的pageno, 这样就可以容易的从磁盘恢复所有的索引结构了。</p>
+<h3 id="b-tree%E5%9C%A8%E6%96%87%E4%BB%B6%E4%B8%AD%E7%9A%84%E7%BB%84%E7%BB%87">B+Tree在文件中的组织</h3>
+<p>有了Page结构，我们就可以将数据承载在一个个page大小的内存里面，同时还可以将page刷新到对应的文件里。有了node.item中的pageno，我们就可以较容易的进行文件和内存结构之间的互相映射了。 B+树在磁盘文件中的组织如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/freedom/file_struct.png" alt="image" loading="lazy"></p>
+<p>B+树在内存中相对应的映射结构如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/freedom/bptree_in_memory.png" alt="image" loading="lazy"></p>
+<p>文件page和内存page中的内容基本是一致的,除了一些内存page中特有的字段，例如dirty等。</p>
+<h3 id="%E6%AF%8F%E4%B8%AA%E7%B4%A2%E5%BC%95%E4%B8%80%E4%B8%AAb-%E6%A0%91">每个索引一个B+树</h3>
+<p>在Freedom中，每个索引都是一颗B+树，对记录的插入和修改都要对所有的B+树进行操作。</p>
+<h3 id="b-tree%E7%9A%84%E6%B5%8B%E8%AF%95">B+Tree的测试</h3>
+<p>笔者通过一系列测试case,例如随机变长记录对B+树进行插入并落盘，修复了其中若干个非常诡异的corner case。</p>
+<h3 id="b-tree%E7%9A%84todo">B+Tree的todo</h3>
+<p>笔者这里只是完成了最简单的B+树结构，没有给其添加并发修改的锁机制，也没有在B+树做操作的时候记录log来保证B+树在宕机等灾难性情况下的一致性,所以就算完成了这么多的工作量，距离一个高并发高可用的bptree还有非常大的距离。</p>
+<h2 id="meta-data">Meta Data</h2>
+<p>table的元信息由create table所创建。创建之后会将元信息落盘，以便Freedom在重启的时候加载表信息。每张表的元信息只占用一页的空间，依旧复用page结构，主要保存的是聚簇索引和二级索引的信息。元信息对应的Item如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/freedom/table_metadata.png" alt="image" loading="lazy"></p>
+<p>如果想让mybatis可以自动生成关于Freedom的代码，还需实现一些特定的sql来展现Freedom的元信息。这个在笔者另一个项目rider中有这样的实现。原理如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/freedom/mybatis_orm.png" alt="image" loading="lazy"></p>
+<p>实现了上述4类SQL之后，mybatis-generator就可以通过jdbc从Freedom获取元信息进而自动生成代码了。</p>
+<h2 id="%E4%BA%8B%E5%8A%A1%E6%94%AF%E6%8C%81">事务支持</h2>
+<p>由于当前Freedom并没有保证并发，所以对于事务的支持只做了最简单的WAL协议。通过记录redo/undolog从而实现原子性。</p>
+<h3 id="redo-undo-log%E5%8D%8F%E8%AE%AE%E6%A0%BC%E5%BC%8F">redo/undo log协议格式</h3>
+<p>Freedom在每做一个修改操作时，都会生成一条日志，其中记录了修改前(undo)和修改后(redo)的行信息，redo用来回滚,redo用来宕机recover。结构如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/freedom/log_record.png" alt="image" loading="lazy"></p>
+<h3 id="wal%E5%8D%8F%E8%AE%AE">WAL协议</h3>
+<p>WAL协议很好理解，就是在事务commit前将当前事务中所产生的的所有log记录刷入磁盘。 Freedom自然也做了这个操作，使得可以在宕机后通过log恢复出所有的数据。</p>
+<p class="image-only"><img src="/blog/assets/source/image/freedom/commit_log_flush.png" alt="image" loading="lazy"></p>
+<h3 id="%E5%9B%9E%E6%BB%9A%E7%9A%84%E5%AE%9E%E7%8E%B0">回滚的实现</h3>
+<p>由于日志中记录了undo，所以对于一个事务的回滚直接通过日志进行undo即可。如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/freedom/log_undo.png" alt="image" loading="lazy"></p>
+<h3 id="%E5%AE%95%E6%9C%BA%E6%81%A2%E5%A4%8D">宕机恢复</h3>
+<p>Freedom如果在page全部刷盘之后关机，则可以由通过加载page的方式获取原来的数据。 但如果突然宕机,例如kill -9之后，则可以通过WAL协议中记录的redo/undo log来重新 恢复所有的数据。由于时间和精力所限，笔者并没有实现基于LSN的检查点机制。</p>
+<h2 id="freedom%E8%BF%90%E8%A1%8C">Freedom运行</h2>
+<pre><code class="language-">git clone https://github.com/alchemystar/Freedom.git
+// 并没有做打包部署的工作，所以最简单的方法是在java编辑器里面
+run alchemystar.freedom.engine.server.main</code></pre>
+<p>以下是笔者实际运行Freedom的例子: insert回滚</p>
+<p class="image-only"><img src="/blog/assets/source/image/freedom/run1.png" alt="image" loading="lazy"></p>
+<p>join查询</p>
+<p class="image-only"><img src="/blog/assets/source/image/freedom/run2.png" alt="image" loading="lazy"></p>
+<p>delete回滚</p>
+<p class="image-only"><img src="/blog/assets/source/image/freedom/run3.png" alt="image" loading="lazy"></p>
+<h2 id="freedom-todo">Freedom todo</h2>
+<p>Freedom还有很多工作没有完成，例如有层次的锁机制和MVCC等，由于工作忙起来就耽搁了。 于是笔者就看了看MySQL源码的实现理解了一下锁和MVCC实现原理，并写了两篇博客。比起 自己动手撸实在是轻松太多了^_^。</p>
+<h3 id="mvcc">MVCC</h3>
+<p>https://my.oschina.net/alchemystar/blog/1927425</p>
+<h3 id="%E4%BA%8C%E9%98%B6%E6%AE%B5%E9%94%81">二阶段锁</h3>
+<p>https://my.oschina.net/alchemystar/blog/1438839</p>
+<h2 id="%E5%B0%BE%E5%A3%B0">尾声</h2>
+<p>在造轮子的过程中一开始是非常有激情非常快乐的。但随着系统越来越庞大，复杂性越来越高，进度就会越来越慢，还时不时要推翻自己原来的设想并重新设计，然后再协同修改关联的所有代码，就如同泥沼，越陷越深。至此，笔者才领悟了软件工程最重要的其实是控制复杂度！始终保持简洁的接口和优雅的设计是实现一个大型系统的必要条件。</p>
+<h2 id="%E6%94%B6%E8%8E%B7%E4%B8%8E%E9%81%97%E6%86%BE">收获与遗憾</h2>
+<p>这次造轮子的过程基本满足了笔者的初衷，通过写一个数据库来学习数据库。不仅仅是加深了理解，最重要的是笔者在写的过程中终于明白了数据库为什么要这么设计，为什么不那样设计，仅仅对书本的阅读可能并不会有这些思考与领悟。 当然，还是有很多遗憾的，Freedom并没有实现锁机制和MVCC。由于只能在工作闲暇时间写，所以断断续续写了一两个月，工作一忙就将这个项目闲置了。现在将Freedom的设计写出来，希望大家能有所收获。</p>
+<p class="image-only"><img src="/blog/assets/source/image/remote/oscimg.oschina.net/up-03e8bdd592b3eb9dec0a50fa5ff56192df0-528d3d1f58d8.jpeg" alt="image" loading="lazy"></p>
+<h2 id="%E5%AD%A6%E4%B9%A0mysql%E8%A7%86%E9%A2%91%E8%AF%BE%E7%A8%8B">学习MySQL视频课程</h2>
+<p>极客时间上的\&lt;\&lt;MySQL实战45讲&gt;&gt;非常不错，下面是其二维码链接:</p>
+<p class="image-only"><img src="/blog/assets/source/image/freedom/mysql_45.jpeg" alt="image" loading="lazy"></p>
+<h2 id="github%E9%93%BE%E6%8E%A5">github链接</h2>
+<p>https://github.com/alchemystar/Freedom</p>
+<h2 id="%E7%A0%81%E4%BA%91%E9%93%BE%E6%8E%A5">码云链接</h2>
+<p>https://gitee.com/alchemystar/Freedom</p></div>
+    <nav class="prev-next"><a href="/blog/articles/socket-d81c1e8d.html"><small>上一篇</small><span>网络编程里的socket</span></a><a href="/blog/articles/sql-3e4ea183.html"><small>下一篇</small><span>自己动手写SQL查询引擎-总篇</span></a></nav>
+  </article>
+  <aside class="article-related">
+    <h2>同类文章</h2><a href="/blog/articles/dubbo-af6bf6dd.html">用隧道协议实现不同dubbo集群间的透明通信</a>
+<a href="/blog/articles/dpvs-session-2f0618af.html">给DPVS加上SESSION同步功能</a>
+<a href="/blog/articles/post-a64c35eb.html">分库分表中间件的高可用实践</a>
+<a href="/blog/articles/c-dbproxy-d9da67e9.html">用C语言撸了个DBProxy</a>
+<a href="/blog/articles/sql-3e4ea183.html">自己动手写SQL查询引擎-总篇</a>
+<a href="/blog/articles/mysql-79d92f6a.html">MySql之自动同步表结构</a>
+<a href="/blog/articles/mysql-crud-929680b4.html">MySql之自动生成CRUD代码</a>
+  </aside>
+</main>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, securityLevel: "loose" });
+</script>
+</body>
+</html>

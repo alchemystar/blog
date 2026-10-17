@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="MyBatis能够通过获取MySql中的information_schema从而获取表的字段等信息，最后通过这些信息生成代码。 笔者受此启发，将MyBatis-Generator中的核心结构体剥离出来，写成了能自动生成简单CRUD的工具。 mysql本身存在一个information_schema,...">
+  <title>MySql之自动生成CRUD代码 - 苍天环绕的小世界</title>
+  <link rel="stylesheet" href="/blog/assets/site.css?v=20261007-contact-page">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="/blog/">苍天环绕的小世界</a>
+  <nav><a href="/blog/">首页</a><a class="nav-featured" href="/blog/featured.html">精品阅读</a><a href="/blog/#articles">文章</a><a href="/blog/contact.html">联系我</a></nav>
+</header>
+<main class="article-layout">
+  <aside class="article-aside">
+    <a class="back-link" href="/blog/">返回首页</a>
+    <div class="toc"><h2>目录</h2><a class="toc-level-1" href="#mysql%E4%B9%8B%E8%87%AA%E5%8A%A8%E7%94%9F%E6%88%90crud%E4%BB%A3%E7%A0%81">MySql之自动生成CRUD代码</a>
+<a class="toc-level-2" href="#%E8%87%AA%E5%8A%A8%E7%94%9F%E6%88%90%E4%BB%A3%E7%A0%81%E5%8E%9F%E7%90%86%E5%9B%BE">自动生成代码原理图</a>
+<a class="toc-level-2" href="#information-schema">information_schema</a>
+<a class="toc-level-2" href="#jdbc%E4%B8%AD%E7%9A%84metadata">jdbc中的MetaData</a>
+<a class="toc-level-3" href="#metadata%E8%8E%B7%E5%8F%96%E4%B8%80%E5%BC%A0%E8%A1%A8%E4%B8%AD%E7%9A%84%E6%89%80%E6%9C%89%E5%AD%97%E6%AE%B5">metaData获取一张表中的所有字段</a>
+<a class="toc-level-2" href="#metadata%E8%8E%B7%E5%8F%96%E8%A1%A8%E4%B8%AD%E7%9A%84%E4%B8%BB%E9%94%AE">metaData获取表中的主键</a>
+<a class="toc-level-2" href="#%E5%B0%86meta%E4%BF%A1%E6%81%AF%E7%BB%84%E7%BB%87%E6%88%90%E7%BB%93%E6%9E%84%E4%BD%93">将meta信息组织成结构体</a>
+<a class="toc-level-2" href="#velocity%E6%B8%B2%E6%9F%93">Velocity渲染:</a>
+<a class="toc-level-2" href="#github%E9%93%BE%E6%8E%A5">github链接</a></div>
+  </aside>
+  <article class="article">
+    <header class="article-title">
+      <div class="meta"><span>自己动手系列</span><time>2017.03.07</time><span>1 min read</span></div>
+      <h1>MySql之自动生成CRUD代码</h1>
+      <p>MyBatis能够通过获取MySql中的information_schema从而获取表的字段等信息，最后通过这些信息生成代码。 笔者受此启发，将MyBatis-Generator中的核心结构体剥离出来，写成了能自动生成简单CRUD的工具。 mysql本身存在一个information_schema,...</p>
+    </header>
+    <div class="prose"><h1 id="mysql%E4%B9%8B%E8%87%AA%E5%8A%A8%E7%94%9F%E6%88%90crud%E4%BB%A3%E7%A0%81">MySql之自动生成CRUD代码</h1>
+<p>MyBatis能够通过获取MySql中的information_schema从而获取表的字段等信息，最后通过这些信息生成代码。 笔者受此启发，将MyBatis-Generator中的核心结构体剥离出来，写成了能自动生成简单CRUD的工具。</p>
+<h2 id="%E8%87%AA%E5%8A%A8%E7%94%9F%E6%88%90%E4%BB%A3%E7%A0%81%E5%8E%9F%E7%90%86%E5%9B%BE">自动生成代码原理图</h2>
+<p class="image-only"><img src="/blog/assets/source/image/codegen/codegen-main.png" alt="codegen" loading="lazy"></p>
+<h2 id="information-schema">information_schema</h2>
+<p>mysql本身存在一个information_schema,记录了所有的元数据信息，主要的几个有: schema表：当前mysql实例中所有数据库的信息。 COLUMNS表：关联了所有表和其中列的信息。 TABLES表：提供了关于数据库中的表的信息。 ......</p>
+<h2 id="jdbc%E4%B8%AD%E7%9A%84metadata">jdbc中的MetaData</h2>
+<p>jdbc提供了非常方便的工具帮助我们获取这些元数据信息，就是MetaData。获取MetaData的代码如下:</p>
+<pre><code class="language-"> Connection connection = getConnection();   
+ DatabaseMetaData metaData = connection.getMetaData();</code></pre>
+<h3 id="metadata%E8%8E%B7%E5%8F%96%E4%B8%80%E5%BC%A0%E8%A1%A8%E4%B8%AD%E7%9A%84%E6%89%80%E6%9C%89%E5%AD%97%E6%AE%B5">metaData获取一张表中的所有字段</h3>
+<p>通过metaData.getColumns方法在指定了schema和table后可以很方便的获取一张表中的所有字段,代码如下:</p>
+<pre><code class="language-">
+    private void caculateColumns(DatabaseMetaData metaData) {
+
+        ResultSet rs = null;
+        try {
+            rs = metaData.getColumns(&quot;&quot;, introspectedTable.getIntrospectedSchema(),
+                    introspectedTable.getIntrospectedTableName(), null);
+
+            while (rs.next()) {
+                IntrospectedColumn introspectedColumn = new IntrospectedColumn();
+                introspectedColumn.setJdbcType(rs.getInt(&quot;DATA_TYPE&quot;)); //$NON-NLS-1$
+                introspectedColumn.setLength(rs.getInt(&quot;COLUMN_SIZE&quot;)); //$NON-NLS-1$
+                introspectedColumn.setActualColumnName(rs.getString(&quot;COLUMN_NAME&quot;)); //$NON-NLS-1$
+                introspectedColumn.setNullable(rs.getInt(&quot;NULLABLE&quot;) == DatabaseMetaData.columnNullable); //$NON-NLS-1$
+                introspectedColumn.setScale(rs.getInt(&quot;DECIMAL_DIGITS&quot;)); //$NON-NLS-1$
+                introspectedColumn.setRemarks(rs.getString(&quot;REMARKS&quot;)); //$NON-NLS-1$
+                introspectedColumn.setDefaultValue(rs.getString(&quot;COLUMN_DEF&quot;)); //$NON-NLS-1$
+
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+
+    }</code></pre>
+<h2 id="metadata%E8%8E%B7%E5%8F%96%E8%A1%A8%E4%B8%AD%E7%9A%84%E4%B8%BB%E9%94%AE">metaData获取表中的主键</h2>
+<p>同样的通过getPrimaryKeys可以很轻松的计算其主键，注意主键可能是联合主键: 对应的代码如下:</p>
+<pre><code class="language-">       ResultSet rs = null;
+        String cataLog;
+
+        try {
+            rs = metaData.getPrimaryKeys(&quot;&quot;, introspectedTable.getIntrospectedSchema(),
+                    introspectedTable.getIntrospectedTableName());
+            Map&lt;Short, String&gt; keyColumns = new TreeMap&lt;Short, String&gt;();
+            while (rs.next()) {
+                String columnName = rs.getString(&quot;COLUMN_NAME&quot;);
+                short keySeq = rs.getShort(&quot;KEY_SEQ&quot;);
+                keyColumns.put(keySeq, columnName);
+            }
+            for (String columnName : keyColumns.values()) {
+                introspectedTable.addPrimaryKeyColumn(columnName);
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+            System.exit(1);
+        } finally {
+            closeResultSet(rs);
+        }</code></pre>
+<h2 id="%E5%B0%86meta%E4%BF%A1%E6%81%AF%E7%BB%84%E7%BB%87%E6%88%90%E7%BB%93%E6%9E%84%E4%BD%93">将meta信息组织成结构体</h2>
+<p>有了上面的信息我们就可以将一张表中的所有信息用java结构体表现出来: Table表Java结构体:</p>
+<pre><code class="language-">public class IntrospectedTable {
+
+    protected List&lt;IntrospectedColumn&gt; primaryKeyColumns;
+    protected List&lt;IntrospectedColumn&gt; baseColumns;
+    protected List&lt;IntrospectedColumn&gt; blobColumns;
+
+    protected String introspectedSchema;
+    private String introspectedCatalog;
+    private String introspectedTableName;</code></pre>
+<p>字段表Java结构体属性过多，在此不一一赘述，详情请见github</p>
+<h2 id="velocity%E6%B8%B2%E6%9F%93">Velocity渲染:</h2>
+<p>有了上述的元数据结构体后，就可以用Velocity渲染，例如如下的Velocity模板:</p>
+<pre><code class="language-">    public ${name} get${name}(${primaryType} ${primaryKey}) {
+
+        return mapper.selectByPrimaryKey(${primaryKey});
+
+    }</code></pre>
+<p>就会被渲染成(假设primaryKey是id,tableName是Archer,appname是codegen):</p>
+<pre><code class="language-">package com.alchemystar.codegen.dal.dao.auto;
+import com.alchemystar.codegen.dal.mapper.auto.ArcherMapper;
+
+public class AutoArcherDao {
+    public Archer getArcher(Long id) {
+
+        return mapper.selectByPrimaryKey(id);
+     }
+}</code></pre>
+<p>入法炮制，就可以通过元数据信息生成不同的方法。从而生成想要的代码。</p>
+<h2 id="github%E9%93%BE%E6%8E%A5">github链接</h2>
+<p>https://github.com/alchemystar/codegen</p></div>
+    <nav class="prev-next"><a href="/blog/articles/mysql-79d92f6a.html"><small>上一篇</small><span>MySql之自动同步表结构</span></a><a href="/blog/articles/mysql-8938d3bc.html"><small>下一篇</small><span>MySql协议讲解-事务协议</span></a></nav>
+  </article>
+  <aside class="article-related">
+    <h2>同类文章</h2><a href="/blog/articles/dubbo-af6bf6dd.html">用隧道协议实现不同dubbo集群间的透明通信</a>
+<a href="/blog/articles/dpvs-session-2f0618af.html">给DPVS加上SESSION同步功能</a>
+<a href="/blog/articles/sql-64ebb2ab.html">自己动手写SQL执行引擎</a>
+<a href="/blog/articles/post-a64c35eb.html">分库分表中间件的高可用实践</a>
+<a href="/blog/articles/c-dbproxy-d9da67e9.html">用C语言撸了个DBProxy</a>
+<a href="/blog/articles/sql-3e4ea183.html">自己动手写SQL查询引擎-总篇</a>
+<a href="/blog/articles/mysql-79d92f6a.html">MySql之自动同步表结构</a>
+  </aside>
+</main>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, securityLevel: "loose" });
+</script>
+</body>
+</html>

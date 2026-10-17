@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="MySql事务协议主要是通过set autocommit、commit以及rollback这三个报文(命令)来实现的。 autocommit,顾名思义，是否自动提交(事务)。如果设置为1，表明自动提交，设置为0，则是非自动提交,这样就隐式的开启了事务。 值得注意的是，一但运行了set autocom...">
+  <title>MySql协议讲解-事务协议 - 苍天环绕的小世界</title>
+  <link rel="stylesheet" href="/blog/assets/site.css?v=20261007-contact-page">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="/blog/">苍天环绕的小世界</a>
+  <nav><a href="/blog/">首页</a><a class="nav-featured" href="/blog/featured.html">精品阅读</a><a href="/blog/#articles">文章</a><a href="/blog/contact.html">联系我</a></nav>
+</header>
+<main class="article-layout">
+  <aside class="article-aside">
+    <a class="back-link" href="/blog/">返回首页</a>
+    <div class="toc"><h2>目录</h2><a class="toc-level-1" href="#mysql%E5%8D%8F%E8%AE%AE%E8%AE%B2%E8%A7%A3-%E4%BA%8B%E5%8A%A1%E5%8D%8F%E8%AE%AE">MySql协议讲解-事务协议</a>
+<a class="toc-level-2" href="#mysql%E4%BA%8B%E5%8A%A1%E5%8D%8F%E8%AE%AE%E4%BA%A4%E4%BA%92%E5%9B%BE">MySql事务协议交互图</a>
+<a class="toc-level-2" href="#1-client%E5%90%91db%E5%8F%91%E9%80%81set-autocommit%E5%91%BD%E4%BB%A4">1.Client向DB发送set autocommit命令</a>
+<a class="toc-level-3" href="#mysql%E7%9A%84set-variable%E5%91%BD%E4%BB%A4">MySql的set variable命令</a>
+<a class="toc-level-2" href="#2-db%E5%90%91client%E8%BF%94%E5%9B%9Eokay%E5%8C%85">2.DB向Client返回Okay包</a>
+<a class="toc-level-2" href="#3-client%E5%90%91db%E5%8F%91%E9%80%81sql%E8%AF%AD%E5%8F%A5">3.Client向DB发送SQL语句</a>
+<a class="toc-level-3" href="#insert-update%E6%88%96%E8%80%85delete">insert、update或者delete</a>
+<a class="toc-level-2" href="#section"></a>
+<a class="toc-level-3" href="#select">select</a>
+<a class="toc-level-3" href="#%E9%87%8D%E5%A4%8D%E4%B8%8A%E8%BF%B0%E8%BF%87%E7%A8%8B">重复上述过程</a>
+<a class="toc-level-2" href="#commit-rollback%E6%8A%A5%E6%96%87">Commit/Rollback报文</a>
+<a class="toc-level-1" href="#github%E9%93%BE%E6%8E%A5">GitHub链接</a></div>
+  </aside>
+  <article class="article">
+    <header class="article-title">
+      <div class="meta"><span>MySQL</span><time>2017.02.13</time><span>1 min read</span></div>
+      <h1>MySql协议讲解-事务协议</h1>
+      <p>MySql事务协议主要是通过set autocommit、commit以及rollback这三个报文(命令)来实现的。 autocommit,顾名思义，是否自动提交(事务)。如果设置为1，表明自动提交，设置为0，则是非自动提交,这样就隐式的开启了事务。 值得注意的是，一但运行了set autocom...</p>
+    </header>
+    <div class="prose"><h1 id="mysql%E5%8D%8F%E8%AE%AE%E8%AE%B2%E8%A7%A3-%E4%BA%8B%E5%8A%A1%E5%8D%8F%E8%AE%AE">MySql协议讲解-事务协议</h1>
+<p>MySql事务协议主要是通过set autocommit、commit以及rollback这三个报文(命令)来实现的。</p>
+<h2 id="mysql%E4%BA%8B%E5%8A%A1%E5%8D%8F%E8%AE%AE%E4%BA%A4%E4%BA%92%E5%9B%BE">MySql事务协议交互图</h2>
+<p class="image-only"><img src="/blog/assets/source/image/mysqlimage/transaction.png" alt="image" loading="lazy"></p>
+<h2 id="1-client%E5%90%91db%E5%8F%91%E9%80%81set-autocommit%E5%91%BD%E4%BB%A4">1.Client向DB发送set autocommit命令</h2>
+<p>autocommit,顾名思义，是否自动提交(事务)。如果设置为1，表明自动提交，设置为0，则是非自动提交,这样就隐式的开启了事务。 值得注意的是，一但运行了set autocommit这个命令，不管设置为1或者0，都会自动提交前一个事务。</p>
+<h3 id="mysql%E7%9A%84set-variable%E5%91%BD%E4%BB%A4">MySql的set variable命令</h3>
+<p>此命令通常是用来设置局部/全局变量用。也是一种com_query包,如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/mysqlimage/autocommit.png" alt="image" loading="lazy"></p>
+<h2 id="2-db%E5%90%91client%E8%BF%94%E5%9B%9Eokay%E5%8C%85">2.DB向Client返回Okay包</h2>
+<p>Okay包已经在之前的博客中讲述过，在此不再赘述。</p>
+<h2 id="3-client%E5%90%91db%E5%8F%91%E9%80%81sql%E8%AF%AD%E5%8F%A5">3.Client向DB发送SQL语句</h2>
+<p>SQL语句即是Com_query包，如果是insert、update或者delete则返回okay包。在此的okay包比起前面的包多了一些信息，下面进行详解。</p>
+<h3 id="insert-update%E6%88%96%E8%80%85delete">insert、update或者delete</h3>
+<h4 id="okay%E5%8C%85%E4%BC%9A%E8%BF%94%E5%9B%9E%E5%BD%B1%E5%93%8D%E7%9A%84%E8%A1%8C%E6%95%B0">okay包会返回影响的行数</h4>
+<p>insert、update或者delete在执行后，都会返回影响的行数。这是通过在okay包中的affectedRows返回。</p>
+<pre><code class="language-">public class OkPacket extends MySQLPacket{
+    public long affectedRows;
+    public long insertId;
+}</code></pre>
+<h4 id="last-insert-id">last insert id</h4>
+<p>在insert执行后，OkPacket在其中的insertId返回last insert id,但是有些ORM框架(例如MyBatis)是通过select LAST_INSERT_ID()方法来获取的。 由于这个Id是存在mysql的session里面的，只要这个session没有被多线程复用，就不用担心last_insert_id被覆盖的问题。</p>
+<h2 id="section"></h2>
+<h3 id="select">select</h3>
+<p>SQL语句是select的话，则会返回ResultSet报文，这个在上一篇报文中已经讨论过。</p>
+<h3 id="%E9%87%8D%E5%A4%8D%E4%B8%8A%E8%BF%B0%E8%BF%87%E7%A8%8B">重复上述过程</h3>
+<p>在一个事务内可以重复上述过程，知道有commit报文或者rollback报文被发送为止。</p>
+<h2 id="commit-rollback%E6%8A%A5%E6%96%87">Commit/Rollback报文</h2>
+<p>Commit/Rollback报文也是一种com_query报文,如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/mysqlimage/commit_rollback.png" alt="image" loading="lazy"></p>
+<p>Commit报文发送后，DB进行事务提交，并返回okay报文。 Rollback报文发送后，DB进行事务回滚，并返回okay报文。</p>
+<h1 id="github%E9%93%BE%E6%8E%A5">GitHub链接</h1>
+<p>https://github.com/alchemystar/Lancelot.git</p></div>
+    <nav class="prev-next"><a href="/blog/articles/mysql-crud-929680b4.html"><small>上一篇</small><span>MySql之自动生成CRUD代码</span></a><a href="/blog/articles/mysql-crud-result-4b7dbe60.html"><small>下一篇</small><span>MySql协议详解-CRUD与Result篇</span></a></nav>
+  </article>
+  <aside class="article-related">
+    <h2>同类文章</h2><a href="/blog/articles/mysql-seconds-behind-master-fceee9b1.html">MySQL-Seconds_behind_master的精度误差</a>
+<a href="/blog/articles/mysql-io-b7cf67b1.html">从MySQL源码看其网络IO模型</a>
+<a href="/blog/articles/mysql-mvcc-f01bb5cb.html">MySQL多版本并发控制机制(MVCC)-源码浅析</a>
+<a href="/blog/articles/mysql-6961acfc.html">MySql-两阶段加锁协议</a>
+<a href="/blog/articles/mysql-proxy-04bb965a.html">MySql-Proxy之多路结果集归并</a>
+<a href="/blog/articles/mysql-binlog-61d26458.html">MySql-Binlog协议详解-报文篇</a>
+<a href="/blog/articles/mysql-binlog-c2503567.html">MySql-Binlog协议详解-流程篇</a>
+<a href="/blog/articles/mysql-crud-result-4b7dbe60.html">MySql协议详解-CRUD与Result篇</a>
+<a href="/blog/articles/mysql-handshake-fdfe17a7.html">MySql协议详解-HandShake握手篇</a>
+  </aside>
+</main>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, securityLevel: "loose" });
+</script>
+</body>
+</html>

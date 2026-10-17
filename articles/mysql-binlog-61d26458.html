@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="紧接上篇流程篇，本篇主要将binlog的event报文。 event报文主要分三层。 (1)MySql报文都有的length-body防粘包结构。 (2)Event Header (2)Event Body 总体结构如下图所示: Event Header结构如下图所示:">
+  <title>MySql-Binlog协议详解-报文篇 - 苍天环绕的小世界</title>
+  <link rel="stylesheet" href="/blog/assets/site.css?v=20261007-contact-page">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="/blog/">苍天环绕的小世界</a>
+  <nav><a href="/blog/">首页</a><a class="nav-featured" href="/blog/featured.html">精品阅读</a><a href="/blog/#articles">文章</a><a href="/blog/contact.html">联系我</a></nav>
+</header>
+<main class="article-layout">
+  <aside class="article-aside">
+    <a class="back-link" href="/blog/">返回首页</a>
+    <div class="toc"><h2>目录</h2><a class="toc-level-1" href="#mysql-binlog%E5%8D%8F%E8%AE%AE%E8%AF%A6%E8%A7%A3-%E6%8A%A5%E6%96%87%E7%AF%87">MySql-Binlog协议详解-报文篇</a>
+<a class="toc-level-2" href="#event%E6%8A%A5%E6%96%87%E5%88%86%E5%B1%82">Event报文分层</a>
+<a class="toc-level-2" href="#eventheader">EventHeader</a>
+<a class="toc-level-2" href="#eventbody">EventBody</a>
+<a class="toc-level-3" href="#rotateeventdata">RotateEventData</a>
+<a class="toc-level-3" href="#updaterowseventdata">UpdateRowsEventData</a>
+<a class="toc-level-3" href="#queryeventdata">QueryEventData</a>
+<a class="toc-level-3" href="#writerowseventdata">WriteRowsEventData</a>
+<a class="toc-level-2" href="#github%E5%9C%B0%E5%9D%80">github地址</a></div>
+  </aside>
+  <article class="article">
+    <header class="article-title">
+      <div class="meta"><span>MySQL</span><time>2017.03.03</time><span>1 min read</span></div>
+      <h1>MySql-Binlog协议详解-报文篇</h1>
+      <p>紧接上篇流程篇，本篇主要将binlog的event报文。 event报文主要分三层。 (1)MySql报文都有的length-body防粘包结构。 (2)Event Header (2)Event Body 总体结构如下图所示: Event Header结构如下图所示:</p>
+    </header>
+    <div class="prose"><h1 id="mysql-binlog%E5%8D%8F%E8%AE%AE%E8%AF%A6%E8%A7%A3-%E6%8A%A5%E6%96%87%E7%AF%87">MySql-Binlog协议详解-报文篇</h1>
+<p>紧接上篇流程篇，本篇主要将binlog的event报文。</p>
+<h2 id="event%E6%8A%A5%E6%96%87%E5%88%86%E5%B1%82">Event报文分层</h2>
+<p>event报文主要分三层。 (1)MySql报文都有的length-body防粘包结构。 (2)Event Header (2)Event Body 总体结构如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/binlogimage/binlog-event.png" alt="image" loading="lazy"></p>
+<h2 id="eventheader">EventHeader</h2>
+<p>Event Header结构如下图所示: <img src="/blog/assets/source/image/binlogimage/event-header.png" alt="image" loading="lazy">   (1)前4比特，是当前binlogEvent发生的时间戳 (2)1byte的event类型,详情见github (3)4byte的serverId,是发送event的主库标识 (4)4byte的event_length,是指包含当前eventHeader的整个body的长度 (5)最后2byte是标志位 解EventHeader报文的代码如下所示:</p>
+<pre><code class="language-">    public void read() {
+        timestamp = mm.readUB4() * 1000;
+        eventType = getEventType(mm.read());
+        serverId = mm.readUB4();
+        eventLength = mm.readUB4();
+        nextPosition = mm.readUB4();
+        flags = mm.readUB2();
+    }</code></pre>
+<h2 id="eventbody">EventBody</h2>
+<p>紧接着就是描述EventBody。EventBody根据类型分主要有: (1)RotateEventData:当MySql的binlog文件从file1滚动到file2的时候会发生此事件。 (2)UpdateRowsEventData:当binlog格式设置的是Row|mixed且Row更新的时候会发生此事件。 (3)QueryEventData:当binlog格式设置的是statement|mixed且做DB有了更新、插入或删除操作的时候会发生时间(例如修改Row,alter表等)。 (4)WriteRowsEventData:当binlog格式设置的是Row|mixed且有insert操作时候，有此事件发生。 (5)余下还有不少event格式，在此就不一一罗列了，具体见github</p>
+<h3 id="rotateeventdata">RotateEventData</h3>
+<p class="image-only"><img src="/blog/assets/source/image/binlogimage/rotate-event.png" alt="image" loading="lazy"></p>
+<p>(1)8byte的binlogPosition (2)以0x00结尾的String,表示了当前binlog文件名</p>
+<h3 id="updaterowseventdata">UpdateRowsEventData</h3>
+<p class="image-only"><img src="/blog/assets/source/image/binlogimage/update-rows.png" alt="image" loading="lazy"></p>
+<p>(1)byte的tableId,表明唯一一张表 (2)一个复杂的Bit集合，有更新的Row在更新之前的值在下面Row列表中的位置 (3)一个复杂的Bit集合，有更新的Row在更新之后的值在下面Row列表中的位置 (4)一个Row的列表，配合上面两个bitSet使用 具体解析BitSet非常复杂，详情见github</p>
+<h3 id="queryeventdata">QueryEventData</h3>
+<p class="image-only"><img src="/blog/assets/source/image/binlogimage/query-event.png" alt="image" loading="lazy"></p>
+<p>(1)4bytes的线程id (2)4bytes的当前事件执行时间 (3)1bytes的数据库名字长度 (4)2bytes的errorCode (5)2bytes的statusVar长度 (6)statusVar (7)以0x00结尾的数据库名称 (8)以0x00皆为的执行SQL,例如update t_temp set name=&#x27;123&#x27; where id=1</p>
+<h3 id="writerowseventdata">WriteRowsEventData</h3>
+<p class="image-only"><img src="/blog/assets/source/image/binlogimage/write-rows.png" alt="image" loading="lazy"></p>
+<p>(1)8bytes的tableId (2)一个复杂的Bit集合,和下面的Row配合使用 (3)一个Row的列表，表明了插入的行 由于上述几个eventData解析都很复杂，详情请见github</p>
+<h2 id="github%E5%9C%B0%E5%9D%80">github地址</h2>
+<p>https://github.com/alchemystar/Aroundight</p></div>
+    <nav class="prev-next"><a href="/blog/articles/mysql-mvcc-f01bb5cb.html"><small>上一篇</small><span>MySQL多版本并发控制机制(MVCC)-源码浅析</span></a><a href="/blog/articles/mysql-binlog-c2503567.html"><small>下一篇</small><span>MySql-Binlog协议详解-流程篇</span></a></nav>
+  </article>
+  <aside class="article-related">
+    <h2>同类文章</h2><a href="/blog/articles/mysql-seconds-behind-master-fceee9b1.html">MySQL-Seconds_behind_master的精度误差</a>
+<a href="/blog/articles/mysql-io-b7cf67b1.html">从MySQL源码看其网络IO模型</a>
+<a href="/blog/articles/mysql-mvcc-f01bb5cb.html">MySQL多版本并发控制机制(MVCC)-源码浅析</a>
+<a href="/blog/articles/mysql-6961acfc.html">MySql-两阶段加锁协议</a>
+<a href="/blog/articles/mysql-proxy-04bb965a.html">MySql-Proxy之多路结果集归并</a>
+<a href="/blog/articles/mysql-binlog-c2503567.html">MySql-Binlog协议详解-流程篇</a>
+<a href="/blog/articles/mysql-8938d3bc.html">MySql协议讲解-事务协议</a>
+<a href="/blog/articles/mysql-crud-result-4b7dbe60.html">MySql协议详解-CRUD与Result篇</a>
+<a href="/blog/articles/mysql-handshake-fdfe17a7.html">MySql协议详解-HandShake握手篇</a>
+  </aside>
+</main>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, securityLevel: "loose" });
+</script>
+</body>
+</html>

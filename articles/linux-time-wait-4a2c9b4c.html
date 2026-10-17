@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="笔者一直以为在Linux下TIME_WAIT状态的Socket持续状态是60s左右。线上实际却存在TIME_WAIT超过100s的Socket。由于这牵涉到最近出现的一个复杂Bug的分析。所以，笔者就去Linux源码里面，一探究竟。 TIME_WAIT这个参数通常和五元组重用扯上关系。在这里，笔者先...">
+  <title>从Linux源码看TIME_WAIT状态的持续时间 - 苍天环绕的小世界</title>
+  <link rel="stylesheet" href="/blog/assets/site.css?v=20261007-contact-page">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="/blog/">苍天环绕的小世界</a>
+  <nav><a href="/blog/">首页</a><a class="nav-featured" href="/blog/featured.html">精品阅读</a><a href="/blog/#articles">文章</a><a href="/blog/contact.html">联系我</a></nav>
+</header>
+<main class="article-layout">
+  <aside class="article-aside">
+    <a class="back-link" href="/blog/">返回首页</a>
+    <div class="toc"><h2>目录</h2><a class="toc-level-1" href="#%E4%BB%8Elinux%E6%BA%90%E7%A0%81%E7%9C%8Btime-wait%E7%8A%B6%E6%80%81%E7%9A%84%E6%8C%81%E7%BB%AD%E6%97%B6%E9%97%B4">从Linux源码看TIME_WAIT状态的持续时间</a>
+<a class="toc-level-2" href="#%E5%89%8D%E8%A8%80">前言</a>
+<a class="toc-level-2" href="#%E9%A6%96%E5%85%88%E4%BB%8B%E7%BB%8D%E4%B8%8Blinux%E7%8E%AF%E5%A2%83">首先介绍下Linux环境</a>
+<a class="toc-level-2" href="#time-wait%E7%8A%B6%E6%80%81%E8%BD%AC%E7%A7%BB%E5%9B%BE">TIME_WAIT状态转移图</a>
+<a class="toc-level-2" href="#%E6%8C%81%E7%BB%AD%E6%97%B6%E9%97%B4%E7%9C%9F%E5%A6%82tcp-timewait-len%E6%89%80%E5%AE%9A%E4%B9%89%E4%B9%88">持续时间真如TCP_TIMEWAIT_LEN所定义么?</a>
+<a class="toc-level-2" href="#time-wait%E5%AE%9A%E6%97%B6%E5%99%A8%E6%BA%90%E7%A0%81">TIME_WAIT定时器源码</a>
+<a class="toc-level-2" href="#inet-twsk-schedule">inet_twsk_schedule</a>
+<a class="toc-level-2" href="#%E5%85%B7%E4%BD%93%E7%9A%84%E6%B8%85%E7%90%86%E5%87%BD%E6%95%B0">具体的清理函数</a>
+<a class="toc-level-2" href="#%E5%85%88%E4%BD%9C%E5%87%BA%E4%B8%80%E4%B8%AA%E5%81%87%E8%AE%BE">先作出一个假设</a>
+<a class="toc-level-2" href="#%E5%A6%82%E6%9E%9C%E4%B8%80%E4%B8%AAslot%E4%B8%AD%E7%9A%84time-wait-100">如果一个slot中的TIME_WAIT&lt;=100</a>
+<a class="toc-level-2" href="#%E5%A6%82%E6%9E%9C%E4%B8%80%E4%B8%AAslot%E4%B8%AD%E7%9A%84time-wait100">如果一个slot中的TIME_WAIT100</a>
+<a class="toc-level-2" href="#paws-protection-against-wrapped-sequences-%E4%BD%BF%E5%BE%97time-wait%E5%BB%B6%E9%95%BF">PAWS(Protection Against Wrapped Sequences)使得TIME_WAIT延长</a>
+<a class="toc-level-1" href="#%E6%80%BB%E7%BB%93">总结</a></div>
+  </aside>
+  <article class="article">
+    <header class="article-title">
+      <div class="meta"><span>linux源码分析</span><time>2020.10.26</time><span>6 min read</span></div>
+      <h1>从Linux源码看TIME_WAIT状态的持续时间</h1>
+      <p>笔者一直以为在Linux下TIME_WAIT状态的Socket持续状态是60s左右。线上实际却存在TIME_WAIT超过100s的Socket。由于这牵涉到最近出现的一个复杂Bug的分析。所以，笔者就去Linux源码里面，一探究竟。 TIME_WAIT这个参数通常和五元组重用扯上关系。在这里，笔者先...</p>
+    </header>
+    <div class="prose"><h1 id="%E4%BB%8Elinux%E6%BA%90%E7%A0%81%E7%9C%8Btime-wait%E7%8A%B6%E6%80%81%E7%9A%84%E6%8C%81%E7%BB%AD%E6%97%B6%E9%97%B4">从Linux源码看TIME_WAIT状态的持续时间</h1>
+<h2 id="%E5%89%8D%E8%A8%80">前言</h2>
+<p>笔者一直以为在Linux下TIME_WAIT状态的Socket持续状态是60s左右。线上实际却存在TIME_WAIT超过100s的Socket。由于这牵涉到最近出现的一个复杂Bug的分析。所以，笔者就去Linux源码里面，一探究竟。</p>
+<h2 id="%E9%A6%96%E5%85%88%E4%BB%8B%E7%BB%8D%E4%B8%8Blinux%E7%8E%AF%E5%A2%83">首先介绍下Linux环境</h2>
+<p>TIME_WAIT这个参数通常和五元组重用扯上关系。在这里，笔者先给出机器的内核参数设置，以免和其它问题相混淆。</p>
+<pre><code class="language-">cat /proc/sys/net/ipv4/tcp_tw_reuse 0
+cat /proc/sys/net/ipv4/tcp_tw_recycle 0
+cat /proc/sys/net/ipv4/tcp_timestamps 1</code></pre>
+<p>可以看到，我们设置了tcp_tw_recycle为0,这可以避免NAT下tcp_tw_recycle和tcp_timestamps同时开启导致的问题。具体问题可以看笔者的以往博客。</p>
+<pre><code class="language-">https://my.oschina.net/alchemystar/blog/3119992</code></pre>
+<h2 id="time-wait%E7%8A%B6%E6%80%81%E8%BD%AC%E7%A7%BB%E5%9B%BE">TIME_WAIT状态转移图</h2>
+<p>提到Socket的TIME_WAIT状态，不得就不亮出TCP状态转移图了:</p>
+<p class="image-only"><img src="/blog/assets/source/image/time_wait/time_wait_2msl.png" alt="codegen" loading="lazy"></p>
+<p>持续时间就如图中所示的2MSL。但图中并没有指出2MSL到底是多长时间，但笔者从Linux源码里面翻到了下面这个宏定义。</p>
+<pre><code class="language-">#define TCP_TIMEWAIT_LEN (60*HZ) /* how long to wait to destroy TIME-WAIT
+				  * state, about 60 seconds	*/</code></pre>
+<p>如英文字面意思所示，60s后销毁TIME_WAIT状态，那么2MSL肯定就是60s喽？</p>
+<h2 id="%E6%8C%81%E7%BB%AD%E6%97%B6%E9%97%B4%E7%9C%9F%E5%A6%82tcp-timewait-len%E6%89%80%E5%AE%9A%E4%B9%89%E4%B9%88">持续时间真如TCP_TIMEWAIT_LEN所定义么?</h2>
+<p>笔者之前一直是相信60秒TIME_WAIT状态的socket就能够被Kernel回收的。甚至笔者自己做实验telnet一个端口号，人为制造TIME_WAIT，自己计时，也是60s左右即可回收。</p>
+<p class="image-only"><img src="/blog/assets/source/image/time_wait/socket_action.png" alt="codegen" loading="lazy"></p>
+<p>但在追查一个问题时候，发现，TIME_WAIT有时候能够持续到111s,不然完全无法解释问题的现象。这就逼得笔者不得不推翻自己的结论，重新细细阅读内核对于TIME_WAIT状态处理的源码。当然，这个追查的问题也会写成博客分享出来，敬请期待^_^。</p>
+<h2 id="time-wait%E5%AE%9A%E6%97%B6%E5%99%A8%E6%BA%90%E7%A0%81">TIME_WAIT定时器源码</h2>
+<p>谈到TIME_WAIT何时能够被回收，不得不谈到TIME_WAIT定时器,这个就是专门用来销毁到期的TIME_WAIT Socket的。而每一个Socket进入TIME_WAIT时，必然会经过下面的代码分支:</p>
+<pre><code class="language-">tcp_v4_rcv
+	|-&gt;tcp_timewait_state_process
+		/* 将time_wait状态的socket链入时间轮
+		|-&gt;inet_twsk_schedule</code></pre>
+<p>由于我们的kernel并没有开启tcp_tw_recycle,所以最终的调用为:</p>
+<pre><code class="language-">/* 这边TCP_TIMEWAIT_LEN 60 * HZ */
+inet_twsk_schedule(tw, &amp;tcp_death_row, TCP_TIMEWAIT_LEN,
+					 TCP_TIMEWAIT_LEN);</code></pre>
+<p>好了，让我们按下这个核心函数吧。</p>
+<h2 id="inet-twsk-schedule">inet_twsk_schedule</h2>
+<p>在阅读源码前，先看下大致的处理流程。Linux内核是通过时间轮来处理到期的TIME_WAIT socket，如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/time_wait/time_wheel.png" alt="codegen" loading="lazy"></p>
+<p>内核将60s的时间分为8个slot(INET_TWDR_RECYCLE_SLOTS),每个slot处理7.5(60/8)范围time_wait状态的socket。</p>
+<pre><code class="language-">void inet_twsk_schedule(struct inet_timewait_sock *tw,struct inet_timewait_death_row *twdr,const int timeo, const int timewait_len)
+{
+	......
+	// 计算时间轮的slot
+	slot = (timeo + (1 &lt;&lt; INET_TWDR_RECYCLE_TICK) - 1) &gt;&gt; INET_TWDR_RECYCLE_TICK;
+	......
+	// 慢时间轮的逻辑，由于没有开启TCP\_TW\_RECYCLE,timeo总是60*HZ(60s)
+	// 所有都走slow_timer逻辑 
+	if (slot &gt;= INET_TWDR_RECYCLE_SLOTS) {
+		/* Schedule to slow timer */
+		if (timeo &gt;= timewait_len) {
+			slot = INET_TWDR_TWKILL_SLOTS - 1;
+		} else {
+			slot = DIV_ROUND_UP(timeo, twdr-&gt;period);
+			if (slot &gt;= INET_TWDR_TWKILL_SLOTS)
+				slot = INET_TWDR_TWKILL_SLOTS - 1;
+		}
+		tw-&gt;tw_ttd = jiffies + timeo;
+		// twdr-&gt;slot当前正在处理的slot
+		// 在TIME_WAIT_LEN下，这个逻辑一般7
+		slot = (twdr-&gt;slot + slot) &amp; (INET_TWDR_TWKILL_SLOTS - 1);
+		list = &amp;twdr-&gt;cells[slot];
+	} else{
+		// 走短时间定时器，由于篇幅原因，不在这里赘述
+		......
+	}
+	......
+	/* twdr-&gt;period 60/8=7.5 */
+	if (twdr-&gt;tw_count++ == 0)
+		mod_timer(&amp;twdr-&gt;tw_timer, jiffies + twdr-&gt;period);
+	spin_unlock(&amp;twdr-&gt;death_lock);
+}</code></pre>
+<p>从源码中可以看到，由于我们传入的timeout皆为TCP_TIMEWAIT_LEN。所以，每次刚成为的TIME_WAIT状态的socket即将链接到当前处理slot最远的slot(+7)以便处理。如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/time_wait/slot_assign.png" alt="codegen" loading="lazy"></p>
+<p>如果Kernel不停的产生TIME_WAIT,那么整个slow timer时间轮就会如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/time_wait/time_wheel_full.png" alt="codegen" loading="lazy"></p>
+<p>所有的slot全部挂满了TIME_WAIT状态的Socket。</p>
+<h2 id="%E5%85%B7%E4%BD%93%E7%9A%84%E6%B8%85%E7%90%86%E5%87%BD%E6%95%B0">具体的清理函数</h2>
+<p>每次调用inet_twsk_schedule时候传入的处理函数都是:</p>
+<pre><code class="language-">/*参数中的tcp_death_row即为承载时间轮处理函数的结构体*/
+inet_twsk_schedule(tw,&amp;tcp_death_row,TCP_TIMEWAIT_LEN,TCP_TIMEWAIT_LEN)
+/* 具体的处理结构体 */
+struct inet_timewait_death_row tcp_death_row = {
+	......
+	/* slow_timer时间轮处理函数 */
+	.tw_timer	= TIMER_INITIALIZER(inet_twdr_hangman, 0,
+					    (unsigned long)&amp;tcp_death_row),
+	/* slow_timer时间轮辅助处理函数*/
+	.twkill_work	= __WORK_INITIALIZER(tcp_death_row.twkill_work,
+					     inet_twdr_twkill_work),
+	/* 短时间轮处理函数 */
+	.twcal_timer	= TIMER_INITIALIZER(inet_twdr_twcal_tick, 0,
+					    (unsigned long)&amp;tcp_death_row),				
+};</code></pre>
+<p>由于我们这边主要考虑的是设置为TCP_TIMEWAIT_LEN(60s)的处理时间，所以直接考察slow_timer时间轮处理函数，也就是inet_twdr_hangman。这个函数还是比较简短的:</p>
+<pre><code class="language-">void inet_twdr_hangman(unsigned long data)
+{
+	struct inet_timewait_death_row *twdr;
+	unsigned int need_timer;
+
+	twdr = (struct inet_timewait_death_row *)data;
+	spin_lock(&amp;twdr-&gt;death_lock);
+
+	if (twdr-&gt;tw_count == 0)
+		goto out;
+
+	need_timer = 0;
+	// 如果此slot处理的time_wait socket已经达到了100个，且还没处理完
+	if (inet_twdr_do_twkill_work(twdr, twdr-&gt;slot)) {
+		twdr-&gt;thread_slots |= (1 &lt;&lt; twdr-&gt;slot);
+		// 将余下的任务交给work queue处理
+		schedule_work(&amp;twdr-&gt;twkill_work);
+		need_timer = 1;
+	} else {
+		/* We purged the entire slot, anything left?  */
+		// 判断是否还需要继续处理
+		if (twdr-&gt;tw_count)
+			need_timer = 1;
+		// 如果当前slot处理完了，才跳转到下一个slot
+		twdr-&gt;slot = ((twdr-&gt;slot + 1) &amp; (INET_TWDR_TWKILL_SLOTS - 1));
+	}
+	// 如果还需要继续处理，则在7.5s后再运行此函数
+	if (need_timer)
+		mod_timer(&amp;twdr-&gt;tw_timer, jiffies + twdr-&gt;period);
+out:
+	spin_unlock(&amp;twdr-&gt;death_lock);
+}</code></pre>
+<p>虽然简单，但这个函数里面有不少细节。第一个细节，就在inet_twdr_do_twkill_work,为了防止这个slot的time_wait过多，卡住当前的流程，其会在处理完100个time_wait socket之后就回返回。这个slot余下的time_wait会交给Kernel的work_queue机制去处理。</p>
+<p class="image-only"><img src="/blog/assets/source/image/time_wait/work_queue_handle.png" alt="codegen" loading="lazy"></p>
+<p>值得注意的是。由于在这个slow_timer时间轮判断里面，根本不判断精确时间，直接全部删除。所以轮到某个slot,例如到了52.5-60s这个slot，直接清理52.5-60s的所有time_wait。即使time_wait还没有到60s也是如此。而小时间轮(tw_cal)会精确的判定时间,由于篇幅原因，就不在这里细讲了。</p>
+<pre><code class="language-">注: 小时间轮(tw\_cal)在tcp\_tw\_recycle开启的情况下会使用</code></pre>
+<h2 id="%E5%85%88%E4%BD%9C%E5%87%BA%E4%B8%80%E4%B8%AA%E5%81%87%E8%AE%BE">先作出一个假设</h2>
+<p>我们假设，一个时间轮的数据最多能在一个slot间隔时间，也就是(60/8=7.5)内肯定能处理完毕。由于系统有tcp_tw_max_buckets设置,如果设置的比较合理,这个假设还是比较靠谱的。</p>
+<pre><code class="language-">注: 这里的60/8为什么需要精确到小数，而不是7。
+因为实际计算的时候是拿60*HZ进行计算，
+如果HZ是1024的话，那么period应该是7680,即精度精确到ms级。
+所以在本文中计算的时候需要精确到小数。</code></pre>
+<h2 id="%E5%A6%82%E6%9E%9C%E4%B8%80%E4%B8%AAslot%E4%B8%AD%E7%9A%84time-wait-100">如果一个slot中的TIME_WAIT&lt;=100</h2>
+<p>如果一个slot的TIME_WAIT&lt;=100,很自然的，我们的处理函数并不会启用work_queue。同时，还将slot+1,使得在下一个period的时候可以处理下一个slot。如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/time_wait/slot_0_to_1.png" alt="codegen" loading="lazy"></p>
+<h2 id="%E5%A6%82%E6%9E%9C%E4%B8%80%E4%B8%AAslot%E4%B8%AD%E7%9A%84time-wait100">如果一个slot中的TIME_WAIT100</h2>
+<p>如果一个slot的TIME_WAIT&gt;100,Kernel会将余下的任务交给work_queue处理。同时，slot不变！也即是说，下一个period(7.5s后)到达的时候，还会处理同样的slot。按照我们的假设，这时候slot已经处理完毕，那么在第7.5s的时候才将slot向前推进。也就是说，假设slot一开始为0，到真正处理slot 1需要15s!</p>
+<p class="image-only"><img src="/blog/assets/source/image/time_wait/slot_15_1.png" alt="codegen" loading="lazy"></p>
+<p>假设每一个slot的TIME_WAIT都&gt;100的话，那么每个slot的处理都需要15s。</p>
+<p>对于这种情况，笔者写了个程序进行模拟。</p>
+<pre><code class="language-">public class TimeWaitSimulator {
+
+    public static void main(String[] args) {
+        double delta = (60) * 1.0 / 8;
+
+        // 0表示开始清理，1表示清理完毕
+        // 清理完毕之后slot向前推进
+        int startPurge = 0;
+        double sum = 0;
+        int slot = 0;
+        while (slot &lt; 8) {
+            if (startPurge == 0) {
+                sum += delta;
+                startPurge = 1;
+                if (slot == 7) {
+                    // 因为假设进入work_queue之后，很快就会清理完
+                    // 所以在slot为7的时候并不需要等最后的那个purge过程7.5s
+                    System.out.println(&quot;slot &quot; + slot + &quot; has reach the last &quot; + sum);
+                    break;
+                }
+            }
+            if (startPurge == 1) {
+                sum += delta;
+                startPurge = 0;
+                System.out.println(&quot;slot &quot; + &quot;move to next at time &quot; + sum);
+                // 清理完之后，slot才应该向前推进
+                slot++;
+            }
+        }
+    }
+}</code></pre>
+<p>得出结果如下面所示:</p>
+<pre><code class="language-">slot move to next at time 15.0
+slot move to next at time 30.0
+slot move to next at time 45.0
+slot move to next at time 60.0
+slot move to next at time 75.0
+slot move to next at time 90.0
+slot move to next at time 105.0
+slot 7 has reach the last  112.5</code></pre>
+<p>也即处理到52.5-60s这个时间轮的时候，其实外面时间已经过去了112.5s，处理已经完全滞后了。不过由于TIME_WAIT状态下的Socket(inet_timewait_sock)所占用内存很少，所以不会对系统可用资源造成太大的影响。但是，这会在NAT环境下造成一个坑，这也是笔者文章前面提到过的Bug。 上面的计算如果按照图和时间线画出来，应该是这么个情况:</p>
+<p class="image-only"><img src="/blog/assets/source/image/time_wait/slot_7_1125.png" alt="codegen" loading="lazy"></p>
+<p>也即TIME_WAIT状态的Socket在一个period(7.5s)内能处理完当前slot的情况下，最多能够存在112.5s!</p>
+<p>如果7.5s内还处理不完，那么响应时间轮的轮转还得继续加上一个或多个perod。但在tcp_tw_max_buckets的限制，应该无法达到这么严苛的条件。</p>
+<h2 id="paws-protection-against-wrapped-sequences-%E4%BD%BF%E5%BE%97time-wait%E5%BB%B6%E9%95%BF">PAWS(Protection Against Wrapped Sequences)使得TIME_WAIT延长</h2>
+<p>事实上，以上结论还是不够严谨。TIME_WAIT时间还可以继续延长！看下这段源码:</p>
+<pre><code class="language-">enum tcp_tw_status
+tcp_timewait_state_process(struct inet_timewait_sock *tw, struct sk_buff *skb,
+			   const struct tcphdr *th)
+{
+	......
+	// 如果是SYN分节，而且通过了paws校验
+	if (th-&gt;syn &amp;&amp; !th-&gt;rst &amp;&amp; !th-&gt;ack &amp;&amp; !paws_reject &amp;&amp;
+	    (after(TCP_SKB_CB(skb)-&gt;seq, tcptw-&gt;tw_rcv_nxt) ||
+	     (tmp_opt.saw_tstamp &amp;&amp;
+	      (s32)(tcptw-&gt;tw_ts_recent - tmp_opt.rcv_tsval) &lt; 0))) {
+		......
+		// 返回TCP_TW_SYN,允许重用TIME_WAIT五元组重新建立连接
+		return TCP_TW_SYN;
+	}
+	// 如果没有通过paws校验，则增加统计参数
+	if (paws_reject)
+		NET_INC_STATS_BH(twsk_net(tw), LINUX_MIB_PAWSESTABREJECTED);
+		
+	if (!th-&gt;rst) {
+		/* In this case we must reset the TIMEWAIT timer.
+		 *
+		 * If it is ACKless SYN it may be both old duplicate
+		 * and new good SYN with random sequence number &lt;rcv_nxt.
+		 * Do not reschedule in the last case.
+		 */
+		/* 如果有回绕校验失败的包到达的情况下,或者其实ack包 
+		 * 重置定时器到新的60s之后
+		 */
+		if (paws_reject || th-&gt;ack)
+			inet_twsk_schedule(tw, &amp;tcp_death_row, TCP_TIMEWAIT_LEN,
+					   TCP_TIMEWAIT_LEN);
+
+		/* Send ACK. Note, we do not put the bucket,
+		 * it will be released by caller.
+		 */
+		/* 向对端发送当前time wait状态应该返回的ACK */
+		return TCP_TW_ACK;
+	}
+	inet_twsk_put(tw);
+	return TCP_TW_SUCCESS;
+}</code></pre>
+<p>上面的逻辑如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/time_wait/paws_again.png" alt="codegen" loading="lazy"></p>
+<p>注意代码中返回TCP_TW_SYN的逻辑，通过PAWS校验的SYN包，会返回TCP_TW_SYN，使得TIME_WAIT状态的Socket(五元组)也可以三次握手成功重新复用！ 这段逻辑很微妙，会在笔者下一篇&lt;&lt;解Bug之路&gt;&gt;里面进行详解！</p>
+<h1 id="%E6%80%BB%E7%BB%93">总结</h1>
+<p>如果不仔细分析就下定结论，很容就被自己之前先入为主的一些不够严谨的结论所困扰。导致排查一些复杂问题的时候将思路引导向错误的方向。笔者在追查某个问题的时候就犯了这样的错误。当种种猜测都和事实矛盾时，必须怀疑起自己之前笃定的结论并尝试着推翻它,整个过程即艰辛又快乐！</p></div>
+    <nav class="prev-next"><a href="/blog/articles/linux-socket-tcp-listen-d1e99aff.html"><small>上一篇</small><span>从Linux源码看Socket(TCP)的listen及连接队列</span></a><a href="/blog/articles/mysql-io-b7cf67b1.html"><small>下一篇</small><span>从MySQL源码看其网络IO模型</span></a></nav>
+  </article>
+  <aside class="article-related">
+    <h2>同类文章</h2><a href="/blog/articles/linux-socket-tcp-listen-d1e99aff.html">从Linux源码看Socket(TCP)的listen及连接队列</a>
+<a href="/blog/articles/tcp-syncookie-0db101f6.html">tcp_syncookie的坑</a>
+<a href="/blog/articles/linux-tcp-304f12e7.html">Linux上TCP的几个内核参数调优</a>
+<a href="/blog/articles/linux-socket-tcp-accept-e8523e42.html">从Linux源码看Socket(TCP)的accept</a>
+<a href="/blog/articles/linux-socket-tcp-bind-c32706d2.html">从Linux源码看Socket(TCP)的bind</a>
+<a href="/blog/articles/linux-socket-close-d72a4843.html">从linux源码看socket的close</a>
+<a href="/blog/articles/socket-d81c1e8d.html">网络编程里的socket</a>
+<a href="/blog/articles/linux-socket-tcp-timeout-b3547af3.html">从linux源码看socket(tcp)的timeout</a>
+<a href="/blog/articles/linux-epoll-8d1f5086.html">从linux源码看epoll</a>
+  </aside>
+</main>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, securityLevel: "loose" });
+</script>
+</body>
+</html>

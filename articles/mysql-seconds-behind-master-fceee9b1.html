@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Seconds_behind_master是我们观察主从延迟的一个重要指标。但任何指标所能表示的精度都是有限的。例如用精度只能到秒的指标去衡量毫秒级的表现就会产生非常大的误差。如果再以此误差去分析问题，就会让思维走上弯路。例如用Seconds_behind_master去评估1s内的主从延迟就是一个...">
+  <title>MySQL-Seconds_behind_master的精度误差 - 苍天环绕的小世界</title>
+  <link rel="stylesheet" href="/blog/assets/site.css?v=20261007-contact-page">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="/blog/">苍天环绕的小世界</a>
+  <nav><a href="/blog/">首页</a><a class="nav-featured" href="/blog/featured.html">精品阅读</a><a href="/blog/#articles">文章</a><a href="/blog/contact.html">联系我</a></nav>
+</header>
+<main class="article-layout">
+  <aside class="article-aside">
+    <a class="back-link" href="/blog/">返回首页</a>
+    <div class="toc"><h2>目录</h2><a class="toc-level-1" href="#mysql-seconds-behind-master%E7%9A%84%E7%B2%BE%E5%BA%A6%E8%AF%AF%E5%B7%AE">MySQL-Seconds_behind_master的精度误差</a>
+<a class="toc-level-2" href="#%E5%89%8D%E8%A8%80">前言</a>
+<a class="toc-level-2" href="#%E9%97%AE%E9%A2%98%E7%8E%B0%E5%9C%BA">问题现场</a>
+<a class="toc-level-2" href="#%E7%BD%91%E7%BB%9C%E9%97%AE%E9%A2%98">网络问题</a>
+<a class="toc-level-2" href="#seconds-behind-master%E7%9A%84%E5%8F%96%E7%82%B9%E6%95%B0%E6%8D%AE">Seconds_behind_master的取点数据</a>
+<a class="toc-level-2" href="#seconds-behind-master%E4%BB%80%E4%B9%88%E6%97%B6%E5%80%99%E8%AE%A1%E7%AE%97%E5%87%BA%E6%9D%A5%E4%B8%BA1">Seconds_behind_master什么时候计算出来为1</a>
+<a class="toc-level-3" href="#seconds-behind-master%E5%9C%A8mysql%E4%B8%AD%E7%9A%84%E8%AE%A1%E7%AE%97%E6%BA%90%E7%A0%81">Seconds_behind_master在MySQL中的计算源码</a>
+<a class="toc-level-3" href="#%E4%BB%80%E4%B9%88%E6%97%B6%E5%80%99%E8%AE%A1%E7%AE%97clock-diff-with-master">什么时候计算clock_diff_with_master</a>
+<a class="toc-level-3" href="#clock-diff-with-master%E8%B7%A8%E7%A7%92%E8%AF%AF%E5%B7%AE">clock_diff_with_master跨秒误差</a>
+<a class="toc-level-3" href="#%E5%9C%A8%E5%AE%9E%E9%99%85%E4%B8%BB%E4%BB%8E%E5%BB%B6%E8%BF%9F%E4%B8%BA0%E7%9A%84%E6%83%85%E5%86%B5%E4%B8%8Bclock-diff-with-master%E8%AE%A1%E7%AE%97%E5%87%BA%E6%9D%A5%E6%98%AF-1-seconds-behind-master%E8%AE%A1%E7%AE%97%E4%B8%BA1">在实际主从延迟为0的情况下clock_diff_with_master计算出来是-1，Seconds_behind_master计算为1</a>
+<a class="toc-level-3" href="#%E5%AE%9E%E9%99%85%E4%B8%BB%E4%BB%8E%E5%BB%B6%E8%BF%9F%E4%B8%BA0%E7%9A%84%E6%83%85%E5%86%B5%E4%B8%8Bclock-diff-with-master%E8%AE%A1%E7%AE%97%E4%B8%BA0-seconds-behind-master%E8%AE%A1%E7%AE%97%E4%B8%BA-1%E5%B9%B6%E8%A2%AB%E6%A0%A1%E6%AD%A3%E4%B8%BA0">实际主从延迟为0的情况下clock_diff_with_master计算为0，Seconds_behind_master计算为-1并被校正为0</a>
+<a class="toc-level-2" href="#%E5%A6%82%E4%BD%95%E8%8E%B7%E5%BE%97%E7%B2%BE%E7%A1%AE%E7%9A%84%E6%AF%AB%E7%A7%92%E7%BA%A7%E7%9A%84%E4%B8%BB%E4%BB%8E%E5%BB%B6%E8%BF%9F">如何获得精确的毫秒级的主从延迟</a>
+<a class="toc-level-1" href="#%E6%80%BB%E7%BB%93">总结</a>
+<a class="toc-level-2" href="#%E5%85%AC%E4%BC%97%E5%8F%B7">公众号</a></div>
+  </aside>
+  <article class="article">
+    <header class="article-title">
+      <div class="meta"><span>MySQL</span><time>2022.05.13</time><span>4 min read</span></div>
+      <h1>MySQL-Seconds_behind_master的精度误差</h1>
+      <p>Seconds_behind_master是我们观察主从延迟的一个重要指标。但任何指标所能表示的精度都是有限的。例如用精度只能到秒的指标去衡量毫秒级的表现就会产生非常大的误差。如果再以此误差去分析问题，就会让思维走上弯路。例如用Seconds_behind_master去评估1s内的主从延迟就是一个...</p>
+    </header>
+    <div class="prose"><h1 id="mysql-seconds-behind-master%E7%9A%84%E7%B2%BE%E5%BA%A6%E8%AF%AF%E5%B7%AE">MySQL-Seconds_behind_master的精度误差</h1>
+<h2 id="%E5%89%8D%E8%A8%80">前言</h2>
+<p>Seconds_behind_master是我们观察主从延迟的一个重要指标。但任何指标所能表示的精度都是有限的。例如用精度只能到秒的指标去衡量毫秒级的表现就会产生非常大的误差。如果再以此误差去分析问题，就会让思维走上弯路。例如用Seconds_behind_master去评估1s内的主从延迟就是一个典型的例子。</p>
+<h2 id="%E9%97%AE%E9%A2%98%E7%8E%B0%E5%9C%BA">问题现场</h2>
+<p>在一些问题的排查中，我们注意到一个很奇怪的现象。那就是相同配置的从库表现出来的主从延迟差距有将近500ms。而这两个从库之间的差别就是所在的机房不一样(和主库都不在同一个机房)。如下图所示：</p>
+<p class="image-only"><img src="/blog/assets/source/image/seconds_behind_2/a_master_20_kilo.png" alt="bug_locale" loading="lazy"></p>
+<h2 id="%E7%BD%91%E7%BB%9C%E9%97%AE%E9%A2%98">网络问题</h2>
+<p>难道是网络问题？那我们ping一下吧，最多也就相差1ms。那么还有499ms去哪里了呢，看来还得继续挖掘。</p>
+<h2 id="seconds-behind-master%E7%9A%84%E5%8F%96%E7%82%B9%E6%95%B0%E6%8D%AE">Seconds_behind_master的取点数据</h2>
+<p>直觉上来说网络问题不可能导致500ms这么大的误差，而机器配置和MySQL版本又是一样的。这就让笔者不得不怀疑这个兼容数据的准确性。所以就先看看这个500ms是怎么计算出来的。</p>
+<p class="image-only"><img src="/blog/assets/source/image/seconds_behind_2/seconds_monitor_point.png" alt="bug_locale" loading="lazy"></p>
+<p>从监控取点数据来看从库C确实有主从延迟，不然为什么有那么多取点为0呢。</p>
+<h2 id="seconds-behind-master%E4%BB%80%E4%B9%88%E6%97%B6%E5%80%99%E8%AE%A1%E7%AE%97%E5%87%BA%E6%9D%A5%E4%B8%BA1">Seconds_behind_master什么时候计算出来为1</h2>
+<p>这时候笔者突然想到一个点，如果主从延迟一个是501ms一个是499ms，那么Seconds_behind_master计算的时候会不会采用四舍五入法。501ms(&gt;=500ms)的就是1，499(&lt;500ms)的就是0？为了了解这一问题，笔者就去翻了翻源码。</p>
+<h3 id="seconds-behind-master%E5%9C%A8mysql%E4%B8%AD%E7%9A%84%E8%AE%A1%E7%AE%97%E6%BA%90%E7%A0%81">Seconds_behind_master在MySQL中的计算源码</h3>
+<p>计算这个指标的代码有很多微妙的分支，应对了各种corner case。在此笔者只列出和当前问题相关的源码。</p>
+<pre><code class="language-">long time_diff= ((long)(time(0) - mi-&gt;rli-&gt;last_master_timestamp)
+                       - mi-&gt;clock_diff_with_master);</code></pre>
+<p>前面time(0) - mi-&gt;rli-&gt;last_master_timestamp明显就是指时间差。但是，我们要考虑到一个很容易被忽略的常识，也就是不同机器的时间戳是不一样的！</p>
+<p class="image-only"><img src="/blog/assets/source/image/seconds_behind_2/clock_different.png" alt="bug_locale" loading="lazy"></p>
+<p>那么很明显的，如果主从实际延迟是0，但是计算的时候没有剔除掉机器时钟的差异。那么主从延迟就是6s。源码中的mi-&gt;clock_diff_with_master就是去修正这个差距！而计算这个 clock_diff_with_master就会引起不小的误差。</p>
+<h3 id="%E4%BB%80%E4%B9%88%E6%97%B6%E5%80%99%E8%AE%A1%E7%AE%97clock-diff-with-master">什么时候计算clock_diff_with_master</h3>
+<p>笔者在源码中翻阅时候注意到clock_diff_with_master不是每次都去计算的，而是在主从连接上或者重连(reconnect)的那一刻去计算一次。</p>
+<pre><code class="language-">handle_slave_io
+	/* 建立主从连接 */
+	|-&gt;safe_connect(thd, mysql, mi)) 
+	/* connected: 主从连接成功后，计算一下主从clock_diff_with_master */
+	|-&gt;get_master_version_and_clock</code></pre>
+<p>这就自然会导致下面的现象，假设一旦clock_diff_with_master计算有了误差。那么这个误差就会一直存在，直到下次重连为止！</p>
+<h3 id="clock-diff-with-master%E8%B7%A8%E7%A7%92%E8%AF%AF%E5%B7%AE">clock_diff_with_master跨秒误差</h3>
+<p>接着笔者又注意到clock_diff_with_master精度只能到秒。那么自然就会出现下面这几种现象。为了简单起见，我们假设绝对时钟是从0开始，而且我们假设主从延迟是0。只看精度误差所能造成的影响。</p>
+<h3 id="%E5%9C%A8%E5%AE%9E%E9%99%85%E4%B8%BB%E4%BB%8E%E5%BB%B6%E8%BF%9F%E4%B8%BA0%E7%9A%84%E6%83%85%E5%86%B5%E4%B8%8Bclock-diff-with-master%E8%AE%A1%E7%AE%97%E5%87%BA%E6%9D%A5%E6%98%AF-1-seconds-behind-master%E8%AE%A1%E7%AE%97%E4%B8%BA1">在实际主从延迟为0的情况下clock_diff_with_master计算出来是-1，Seconds_behind_master计算为1</h3>
+<p>尽管有NTP，我们也不可能做到两台机器的时间戳在完全一致(除非两台机器有铯原子钟，那基本就没有毫秒级的误差了）。两台机器之间出现几百毫秒甚至数秒的延迟非常正常。例如假设我当前从库的clock是0.5s，主库的clock是1s。那么由于计算精度(只能到秒)的原因，实际实际只有0.5s的时间差会放大到1s。</p>
+<p class="image-only"><img src="/blog/assets/source/image/seconds_behind_2/seconds_behind_master_1.png" alt="bug_locale" loading="lazy"></p>
+<p>那么我们现在可以计算出来在这种情况下Seconds_behind_master的平均值，在这里有一个预先假设就是我们取监控点的时间是随机的。</p>
+<p class="image-only"><img src="/blog/assets/source/image/seconds_behind_2/seconds_behind_master_scope.png" alt="bug_locale" loading="lazy"></p>
+<p>在上图中我们可以看到，在我们取从库时钟[0.5,1.5)这个1s的时间段范围内。在前0.5s，也就是[0.5,1)这个区间中我们计算出来的Seconds_behind_master是0，而在[1,1.5)区间计算的确是1 。那我们的平均值就可以计算出来为(0.5*0+0.5*1)/(1.5-0.5)=0.5=500ms! 也就是说，在没有任何实际主从延迟的情况下，仅仅跨秒这一个因素就能造成好几百毫秒的误差。</p>
+<h3 id="%E5%AE%9E%E9%99%85%E4%B8%BB%E4%BB%8E%E5%BB%B6%E8%BF%9F%E4%B8%BA0%E7%9A%84%E6%83%85%E5%86%B5%E4%B8%8Bclock-diff-with-master%E8%AE%A1%E7%AE%97%E4%B8%BA0-seconds-behind-master%E8%AE%A1%E7%AE%97%E4%B8%BA-1%E5%B9%B6%E8%A2%AB%E6%A0%A1%E6%AD%A3%E4%B8%BA0">实际主从延迟为0的情况下clock_diff_with_master计算为0，Seconds_behind_master计算为-1并被校正为0</h3>
+<p>另外一个有意思的点是，既然误差能加1，自然也能减1。也就是Seconds_behind_master计算为-1。这就会给观察人员造成一个错觉，从库比主库快！当然了MySQL源码考虑到了这一点，强制校正为0。 在这里，笔者将主从连接的那一刻稍微往前偏移0.1s，就可以构造出刚才说的现象，如下图所示：</p>
+<p class="image-only"><img src="/blog/assets/source/image/seconds_behind_2/seconds_behind_master_-1.png" alt="bug_locale" loading="lazy"></p>
+<p>MySQL中的源码注释和强行校正逻辑如下所示:</p>
+<pre><code class="language-">      long time_diff= ((long)(time(0) - mi-&gt;rli-&gt;last_master_timestamp)
+                       - mi-&gt;clock_diff_with_master);
+      /*
+        Apparently on some systems time_diff can be &lt;0. Here are possible
+        reasons related to MySQL:
+        - the master is itself a slave of another master whose time is ahead.
+        - somebody used an explicit SET TIMESTAMP on the master.
+        Possible reason related to granularity-to-second of time functions
+        (nothing to do with MySQL), which can explain a value of -1:
+        assume the master&#x27;s and slave&#x27;s time are perfectly synchronized, and
+        that at slave&#x27;s connection time, when the master&#x27;s timestamp is read,
+        it is at the very end of second 1, and (a very short time later) when
+        the slave&#x27;s timestamp is read it is at the very beginning of second
+        2. Then the recorded value for master is 1 and the recorded value for
+        slave is 2. At SHOW SLAVE STATUS time, assume that the difference
+        between timestamp of slave and rli-&gt;last_master_timestamp is 0
+        (i.e. they are in the same second), then we get 0-(2-1)=-1 as a result.
+        This confuses users, so we don&#x27;t go below 0: hence the max().
+
+        last_master_timestamp == 0 (an &quot;impossible&quot; timestamp 1970) is a
+        special marker to say &quot;consider we have caught up&quot;.
+      */
+      protocol-&gt;store((longlong)(mi-&gt;rli-&gt;last_master_timestamp ?
+                                   max(0L, time_diff) : 0));</code></pre>
+<h2 id="%E5%A6%82%E4%BD%95%E8%8E%B7%E5%BE%97%E7%B2%BE%E7%A1%AE%E7%9A%84%E6%AF%AB%E7%A7%92%E7%BA%A7%E7%9A%84%E4%B8%BB%E4%BB%8E%E5%BB%B6%E8%BF%9F">如何获得精确的毫秒级的主从延迟</h2>
+<p>由于Seconds_behind_master精度的原因，完全无法衡量毫秒级的主从延迟，所以出现了pt-heartbeat这样的工具去精确的计算主从间毫秒级的延迟。在后续采用pt-heartbeat对两个库进行监控后，这两个看上去平均延迟相差500ms的从库实际主从延迟差距在10ms之内。</p>
+<h1 id="%E6%80%BB%E7%BB%93">总结</h1>
+<p>任何指标都有其表示的精度，而在其精度表示范围之外就会产生相当大的误差，以至于能够误导我们的判断。当对某一项的指标感到很反常识的时候，可以考虑是不是本身指标并不能描述当前我们想要观察的现象。例如本文中的阐述就表明Seconds_behind_master对1s的主从延迟的刻画没有太大的意义。</p>
+<h2 id="%E5%85%AC%E4%BC%97%E5%8F%B7">公众号</h2>
+<p>关注笔者公众号，获取更多干货文章:</p>
+<p class="image-only"><img src="/blog/assets/source/image/remote/img2020.cnblogs.com/1411116-20200925101442007-492748732-09a30055aa06.png" alt="" loading="lazy"></p></div>
+    <nav class="prev-next"><a href="/blog/articles/linux-tcp-304f12e7.html"><small>上一篇</small><span>Linux上TCP的几个内核参数调优</span></a><a href="/blog/articles/mysql-mvcc-f01bb5cb.html"><small>下一篇</small><span>MySQL多版本并发控制机制(MVCC)-源码浅析</span></a></nav>
+  </article>
+  <aside class="article-related">
+    <h2>同类文章</h2><a href="/blog/articles/mysql-io-b7cf67b1.html">从MySQL源码看其网络IO模型</a>
+<a href="/blog/articles/mysql-mvcc-f01bb5cb.html">MySQL多版本并发控制机制(MVCC)-源码浅析</a>
+<a href="/blog/articles/mysql-6961acfc.html">MySql-两阶段加锁协议</a>
+<a href="/blog/articles/mysql-proxy-04bb965a.html">MySql-Proxy之多路结果集归并</a>
+<a href="/blog/articles/mysql-binlog-61d26458.html">MySql-Binlog协议详解-报文篇</a>
+<a href="/blog/articles/mysql-binlog-c2503567.html">MySql-Binlog协议详解-流程篇</a>
+<a href="/blog/articles/mysql-8938d3bc.html">MySql协议讲解-事务协议</a>
+<a href="/blog/articles/mysql-crud-result-4b7dbe60.html">MySql协议详解-CRUD与Result篇</a>
+<a href="/blog/articles/mysql-handshake-fdfe17a7.html">MySql协议详解-HandShake握手篇</a>
+  </aside>
+</main>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, securityLevel: "loose" });
+</script>
+</body>
+</html>

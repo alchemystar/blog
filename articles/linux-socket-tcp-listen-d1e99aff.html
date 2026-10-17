@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="笔者一直觉得如果能知道从应用到框架再到操作系统的每一处代码，是一件Exciting的事情。 今天笔者就来从Linux源码的角度看下Server端的Socket在进行listen的时候到底做了哪些事情(基于Linux 3.10内核)，当然由于listen的backlog参数和半连接hash表以及全连接...">
+  <title>从Linux源码看Socket(TCP)的listen及连接队列 - 苍天环绕的小世界</title>
+  <link rel="stylesheet" href="/blog/assets/site.css?v=20261007-contact-page">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="/blog/">苍天环绕的小世界</a>
+  <nav><a href="/blog/">首页</a><a class="nav-featured" href="/blog/featured.html">精品阅读</a><a href="/blog/#articles">文章</a><a href="/blog/contact.html">联系我</a></nav>
+</header>
+<main class="article-layout">
+  <aside class="article-aside">
+    <a class="back-link" href="/blog/">返回首页</a>
+    <div class="toc"><h2>目录</h2><a class="toc-level-1" href="#%E4%BB%8Elinux%E6%BA%90%E7%A0%81%E7%9C%8Bsocket-tcp-%E7%9A%84listen%E5%8F%8A%E8%BF%9E%E6%8E%A5%E9%98%9F%E5%88%97">从Linux源码看Socket(TCP)的listen及连接队列</a>
+<a class="toc-level-2" href="#%E5%89%8D%E8%A8%80">前言</a>
+<a class="toc-level-2" href="#server%E7%AB%AFsocket%E9%9C%80%E8%A6%81listen">Server端Socket需要Listen</a>
+<a class="toc-level-2" href="#listen%E7%B3%BB%E7%BB%9F%E8%B0%83%E7%94%A8">Listen系统调用</a>
+<a class="toc-level-2" href="#inet-listen">inet_listen</a>
+<a class="toc-level-2" href="#%E5%8D%8A%E8%BF%9E%E6%8E%A5%E9%98%9F%E5%88%97hash%E8%A1%A8%E5%92%8C%E5%85%A8%E8%BF%9E%E6%8E%A5%E9%98%9F%E5%88%97">半连接队列hash表和全连接队列</a>
+<a class="toc-level-3" href="#%E4%B8%BA%E4%BB%80%E4%B9%88%E8%A6%81%E5%AD%98%E5%9C%A8%E5%8D%8A%E8%BF%9E%E6%8E%A5%E9%98%9F%E5%88%97">为什么要存在半连接队列</a>
+<a class="toc-level-3" href="#%E5%8D%8A%E8%BF%9E%E6%8E%A5hash%E8%A1%A8%E5%92%8C%E5%85%A8%E8%BF%9E%E6%8E%A5%E9%98%9F%E5%88%97%E7%9A%84%E9%99%90%E5%88%B6">半连接hash表和全连接队列的限制</a>
+<a class="toc-level-3" href="#backlog%E5%AF%B9%E5%8D%8A%E8%BF%9E%E6%8E%A5%E9%98%9F%E5%88%97%E7%9A%84%E5%BD%B1%E5%93%8D">backlog对半连接队列的影响</a>
+<a class="toc-level-1" href="#%E6%80%BB%E7%BB%93">总结</a></div>
+  </aside>
+  <article class="article">
+    <header class="article-title">
+      <div class="meta"><span>linux源码分析</span><time>2026.07.24</time><span>5 min read</span></div>
+      <h1>从Linux源码看Socket(TCP)的listen及连接队列</h1>
+      <p>笔者一直觉得如果能知道从应用到框架再到操作系统的每一处代码，是一件Exciting的事情。 今天笔者就来从Linux源码的角度看下Server端的Socket在进行listen的时候到底做了哪些事情(基于Linux 3.10内核)，当然由于listen的backlog参数和半连接hash表以及全连接...</p>
+    </header>
+    <div class="prose"><h1 id="%E4%BB%8Elinux%E6%BA%90%E7%A0%81%E7%9C%8Bsocket-tcp-%E7%9A%84listen%E5%8F%8A%E8%BF%9E%E6%8E%A5%E9%98%9F%E5%88%97">从Linux源码看Socket(TCP)的listen及连接队列</h1>
+<h2 id="%E5%89%8D%E8%A8%80">前言</h2>
+<p>笔者一直觉得如果能知道从应用到框架再到操作系统的每一处代码，是一件Exciting的事情。 今天笔者就来从Linux源码的角度看下Server端的Socket在进行listen的时候到底做了哪些事情(基于Linux 3.10内核)，当然由于listen的backlog参数和半连接hash表以及全连接队列都相关，在这一篇博客里也一块讲了。</p>
+<h2 id="server%E7%AB%AFsocket%E9%9C%80%E8%A6%81listen">Server端Socket需要Listen</h2>
+<p>众所周知，一个Server端Socket的建立，需要socket、bind、listen、accept四个步骤。 今天笔者就聚焦于Listen这个步骤。</p>
+<p class="image-only"><img src="/blog/assets/source/image/listen/focus_listen.png" alt="codegen" loading="lazy"></p>
+<p>代码如下:</p>
+<pre><code class="language-">void start_server(){
+    // server fd
+    int sockfd_server;
+    // accept fd 
+    int sockfd;
+    int call_err;
+    struct sockaddr_in sock_addr;
+	 ......
+    call_err=bind(sockfd_server,(struct sockaddr*)(&amp;sock_addr),sizeof(sock_addr));
+    if(call_err == -1){
+        fprintf(stdout,&quot;bind error!\n&quot;);
+        exit(1);
+    }
+    // 这边就是我们今天的聚焦点listen
+    call_err=listen(sockfd_server,MAX_BACK_LOG);
+    if(call_err == -1){
+        fprintf(stdout,&quot;listen error!\n&quot;);
+        exit(1);
+    }
+}</code></pre>
+<p>首先我们通过socket系统调用创建了一个socket，其中指定了SOCK_STREAM,而且最后一个参数为0，也就是建立了一个通常所有的TCP Socket。在这里，我们直接给出TCP Socket所对应的ops也就是操作函数。</p>
+<p class="image-only"><img src="/blog/assets/source/image/remote/oscimg.oschina.net/up-ffb587cdd5c37946484f4b78df5053abdef-a0b673b7dcc8.png" alt="codegen" loading="lazy"></p>
+<p>如果你想知道上图中的结构是怎么来的，可以看下笔者以前的博客:</p>
+<pre><code class="language-">https://my.oschina.net/alchemystar/blog/1791017</code></pre>
+<h2 id="listen%E7%B3%BB%E7%BB%9F%E8%B0%83%E7%94%A8">Listen系统调用</h2>
+<p>好了，现在我们直接进入Listen系统调用吧。</p>
+<pre><code class="language-">#include &lt;sys/socket.h&gt;
+// 成功返回0,错误返回-1,同时错误码设置在errno
+int listen(int sockfd, int backlog);</code></pre>
+<p>注意，这边的listen调用是被glibc的INLINE_SYSCALL装过一层，其将返回值修正为只有0和-1这两个选择，同时将错误码的绝对值设置在errno内。 这里面的backlog是个非常重要的参数，如果设置不好，是个很隐蔽的坑。 对于java开发者而言，基本用的现成的框架，而java本身默认的backlog设置大小只有50。这就会引起一些微妙的现象，这个在本文中会进行讲解。</p>
+<p class="image-only"><img src="/blog/assets/source/image/listen/default_backlog.png" alt="codegen" loading="lazy"></p>
+<p>接下来，我们就进入Linux内核源码栈吧</p>
+<pre><code class="language-">listen
+	|-&gt;INLINE_SYSCALL(listen......)
+		|-&gt;SYSCALL_DEFINE2(listen, int, fd, int, backlog)
+			/* 检测对应的描述符fd是否存在，不存在，返回-BADF
+			|-&gt;sockfd_lookup_light
+			/* 限定传过来的backlog最大值不超出 /proc/sys/net/core/somaxconn
+			|-&gt;if ((unsigned int)backlog &gt; somaxconn) backlog = somaxconn
+			|-&gt;sock-&gt;ops-&gt;listen(sock, backlog) &lt;=&gt; inet_listen</code></pre>
+<p>值得注意的是，Kernel对于我们传进来的backlog值做了一次调整，让其无法&gt;内核参数设置中的somaxconn。</p>
+<h2 id="inet-listen">inet_listen</h2>
+<p>接下来就是核心调用程序inet_listen了。</p>
+<pre><code class="language-">int inet_listen(struct socket *sock, int backlog)
+{
+
+	/* Really, if the socket is already in listen state
+	 * we can only allow the backlog to be adjusted.
+	 *if ((sysctl_tcp_fastopen &amp; TFO_SERVER_ENABLE) != 0 &amp;&amp;
+		    inet_csk(sk)-&gt;icsk_accept_queue.fastopenq == NULL) {
+		    // fastopen的逻辑
+			if ((sysctl_tcp_fastopen &amp; TFO_SERVER_WO_SOCKOPT1) != 0)
+				err = fastopen_init_queue(sk, backlog);
+			else if ((sysctl_tcp_fastopen &amp;
+				  TFO_SERVER_WO_SOCKOPT2) != 0)
+				err = fastopen_init_queue(sk,
+				    ((uint)sysctl_tcp_fastopen) &gt;&gt; 16);
+			else
+				err = 0;
+			if (err)
+				goto out;
+		}
+	if(old_state != TCP_LISTEN) {
+	
+		err = inet_csk_listen_start(sk, backlog);
+	}
+	sk-&gt;sk_max_ack_backlog =backlog;
+	......
+}</code></pre>
+<p>从这段代码中，第一个有意思的地方就是,listen这个系统调用可以重复调用！第二次调用的时候仅仅只能修改其backlog队列长度(虽然感觉没啥必要)。</p>
+<p class="image-only"><img src="/blog/assets/source/image/listen/listen_invoke_twice.png" alt="codegen" loading="lazy"></p>
+<p>首先，我们看下除fastopen之外的逻辑(fastopen以后开单章详细讨论)。也就是最后的inet_csk_listen_start调用。</p>
+<pre><code class="language-">int inet_csk_listen_start(struct sock *sk, const int nr_table_entries)
+{
+	......
+	// 这里的nr_table_entries即为调整过后的backlog
+	// 但是在此函数内部会进一步将nr_table_entries = min(backlog,sysctl_max_syn_backlog)这个逻辑
+	int rc = reqsk_queue_alloc(&amp;icsk-&gt;icsk_accept_queue, nr_table_entries);
+	......
+	inet_csk_delack_init(sk);
+	// 设置socket为listen状态
+	sk-&gt;sk_state = TCP_LISTEN;
+	// 检查端口号
+	if (!sk-&gt;sk_prot-&gt;get_port(sk, inet-&gt;inet_num)){
+		// 清除掉dst cache
+		sk_dst_reset(sk);
+		// 将当前sock链入listening_hash
+		// 这样，当SYN到来的时候就能通过__inet_lookup_listen函数找到这个listen中的sock
+		sk-&gt;sk_prot-&gt;hash(sk);
+	}
+	sk-&gt;sk_state = TCP_CLOSE;
+	__reqsk_queue_destroy(&amp;icsk-&gt;icsk_accept_queue);
+	// 端口已经被占用，返回错误码-EADDRINUSE
+	return -EADDRINUSE;
+}</code></pre>
+<p>这里最重要的一个调用sk-&gt;sk_prot-&gt;hash(sk),也就是inet_hash,其将当前sock链入全局的listen hash表，这样就可以在SYN包到来的时候寻找到对应的listen sock了。如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/listen/inet_lookup_sk_buff.png" alt="codegen" loading="lazy"></p>
+<p>如图中所示，如果开启了SO_REUSEPORT的话，可以让不同的Socket listen(监听)同一个端口，这样就能在内核进行创建连接的负载均衡。在Nginx 1.9.1版本开启了之后，其压测性能达到3倍!</p>
+<p class="image-only"><img src="/blog/assets/source/image/bind/nginx_3.png" alt="codegen" loading="lazy"></p>
+<h2 id="%E5%8D%8A%E8%BF%9E%E6%8E%A5%E9%98%9F%E5%88%97hash%E8%A1%A8%E5%92%8C%E5%85%A8%E8%BF%9E%E6%8E%A5%E9%98%9F%E5%88%97">半连接队列hash表和全连接队列</h2>
+<p>在笔者一开始翻阅的资料里面,都提到。tcp的连接队列有两个，一个是sync_queue,另一个accept_queue。但笔者仔细阅读了一下源码，其实并非如此。事实上，sync_queue其实是个hash表(syn_table)。另一个队列是icsk_accept_queue。</p>
+<p>所以在本篇文章里面，将其称为reqsk_queue(request_socket_queue的简称)。 在这里，笔者先给出这两个queue在三次握手时候的出现时机。如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/listen/syn_table_accept_queue.png" alt="codegen" loading="lazy"></p>
+<p>当然了，除了上面提到的qlen和sk_ack_backlog这两个计数器之外，还有一个qlen_young,其作用如下:</p>
+<pre><code class="language-">qlen_young: 
+记录的是刚有SYN到达，
+没有被SYN_ACK重传定时器重传过SYN_ACK
+同时也没有完成过三次握手的sock数量
+</code></pre>
+<p>如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/listen/qlen_young.png" alt="codegen" loading="lazy"></p>
+<p>至于SYN_ACK的重传定时器在内核中的代码为下面所示:</p>
+<pre><code class="language-">static void tcp_synack_timer(struct sock *sk)
+{
+	inet_csk_reqsk_queue_prune(sk, TCP_SYNQ_INTERVAL,
+				   TCP_TIMEOUT_INIT, TCP_RTO_MAX);
+}</code></pre>
+<p>这个定时器在半连接队列不为空的情况下，以200ms(TCP_SYNQ_INTERVAL)为间隔运行一次。限于篇幅，笔者就在这里不多讨论了。</p>
+<h3 id="%E4%B8%BA%E4%BB%80%E4%B9%88%E8%A6%81%E5%AD%98%E5%9C%A8%E5%8D%8A%E8%BF%9E%E6%8E%A5%E9%98%9F%E5%88%97">为什么要存在半连接队列</h3>
+<p>因为根据TCP协议的特点，会存在半连接这样的网络攻击存在，即不停的发SYN包，而从不回应SYN_ACK。如果发一个SYN包就让Kernel建立一个消耗极大的sock，那么很容易就内存耗尽。所以内核在三次握手成功之前，只分配一个占用内存极小的request_sock，以防止这种攻击的现象，再配合syn_cookie机制，尽量抵御这种半连接攻击的风险。</p>
+<h3 id="%E5%8D%8A%E8%BF%9E%E6%8E%A5hash%E8%A1%A8%E5%92%8C%E5%85%A8%E8%BF%9E%E6%8E%A5%E9%98%9F%E5%88%97%E7%9A%84%E9%99%90%E5%88%B6">半连接hash表和全连接队列的限制</h3>
+<p>由于全连接队列里面保存的是占用内存很大的普通sock，所以Kernel给其加了一个最大长度的限制。listen系统调用传入的backlog会先被somaxconn限制，因此全连接队列的最大长度为:</p>
+<pre><code class="language-">min(listen系统调用传入的backlog, /proc/sys/net/core/somaxconn)</code></pre>
+<p>其结果最终被记录到sk-&gt;sk_max_ack_backlog中。需要注意，/proc/sys/net/ipv4/tcp_max_syn_backlog限制的是半连接hash表，而不是全连接队列。在本文所讨论的Linux 3.10内核中，初始化半连接hash表时会进一步采用:</p>
+<pre><code class="language-">min(经过somaxconn调整后的backlog, tcp_max_syn_backlog)</code></pre>
+<p>也就是说，backlog同时会对全连接队列和半连接hash表产生影响，但tcp_max_syn_backlog只限制后者。</p>
+<p>如果全连接队列超过sk-&gt;sk_max_ack_backlog限制，内核会进行丢弃处理，如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/listen/sk_ack_backlog.png" alt="codegen" loading="lazy"></p>
+<p>这种情况的连接丢弃会发生比较诡异的现象。在不设置tcp_abort_on_overflow的时候,client端无法感知，就会导致即在第一笔调用的时候才会知道对端连接丢弃了。</p>
+<p class="image-only"><img src="/blog/assets/source/image/remote/oscimg.oschina.net/3cc93b4787a5b5accdc2907c5223e3044b5-ce29bceef6ac.jpg" alt="codegen" loading="lazy"></p>
+<p>那么，怎么让client端在这种情况下感知呢，我们可以设置一下tcp_abort_on_overflow</p>
+<pre><code class="language-">echo &#x27;1&#x27; &gt; tcp_abort_on_overflow</code></pre>
+<p>设置后，如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/remote/oscimg.oschina.net/e21fdf37d93c7d8e501e9fe15c74178ce25-f30d91a4e279.jpg" alt="codegen" loading="lazy"></p>
+<p>当然了，最直接的还是调大backlog!</p>
+<h3 id="backlog%E5%AF%B9%E5%8D%8A%E8%BF%9E%E6%8E%A5%E9%98%9F%E5%88%97%E7%9A%84%E5%BD%B1%E5%93%8D">backlog对半连接队列的影响</h3>
+<p>这个backlog对半连接队列也有影响，如下代码所示:</p>
+<pre><code class="language-">	/* TW buckets are converted to open requests without
+	 * limitations, they conserve resources and peer is
+	 * evidently real one.
+	 */
+	// 在开启SYN cookie的情况下，如果半连接队列长度超过backlog，则发送cookie
+	// 否则丢弃
+	if (inet_csk_reqsk_queue_is_full(sk) &amp;&amp; !isn) {
+		want_cookie = tcp_syn_flood_action(sk, skb, &quot;TCP&quot;);
+		if (!want_cookie)
+			goto drop;
+	}
+
+	/* Accept backlog is full. If we have already queued enough
+	 * of warm entries in syn queue, drop request. It is better than
+	 * clogging syn queue with openreqs with exponentially increasing
+	 * timeout.
+	 */
+	// 在全连接队列满的情况下，如果有young_ack，那么直接丢弃
+	if (sk_acceptq_is_full(sk) &amp;&amp; inet_csk_reqsk_queue_young(sk) &gt; 1) {
+		NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_LISTENOVERFLOWS);
+		goto drop;
+	}</code></pre>
+<p>我们在dmesg里面经常看到的</p>
+<pre><code class="language-">Possible SYN flooding on port 8080 </code></pre>
+<p>就是由于半连接队列满以后，Kernel发送cookie校验而导致。</p>
+<h1 id="%E6%80%BB%E7%BB%93">总结</h1>
+<p>TCP作为一个古老而又流行的协议，在演化了几十年后，其设计变的相当复杂。从而在出问题的时候变的难于分析，这时候就要reading the fucking source code!而笔者也正是写这篇博客而详细阅读源码的时候偶然间灵光一闪，找到了最近一个诡异问题的根因。这个诡异问题的分析过程将会在近期写出来分享给大家。</p></div>
+    <nav class="prev-next"><a href="/blog/articles/linux-socket-tcp-bind-c32706d2.html"><small>上一篇</small><span>从Linux源码看Socket(TCP)的bind</span></a><a href="/blog/articles/linux-time-wait-4a2c9b4c.html"><small>下一篇</small><span>从Linux源码看TIME_WAIT状态的持续时间</span></a></nav>
+  </article>
+  <aside class="article-related">
+    <h2>同类文章</h2><a href="/blog/articles/tcp-syncookie-0db101f6.html">tcp_syncookie的坑</a>
+<a href="/blog/articles/linux-tcp-304f12e7.html">Linux上TCP的几个内核参数调优</a>
+<a href="/blog/articles/linux-socket-tcp-accept-e8523e42.html">从Linux源码看Socket(TCP)的accept</a>
+<a href="/blog/articles/linux-time-wait-4a2c9b4c.html">从Linux源码看TIME_WAIT状态的持续时间</a>
+<a href="/blog/articles/linux-socket-tcp-bind-c32706d2.html">从Linux源码看Socket(TCP)的bind</a>
+<a href="/blog/articles/linux-socket-close-d72a4843.html">从linux源码看socket的close</a>
+<a href="/blog/articles/socket-d81c1e8d.html">网络编程里的socket</a>
+<a href="/blog/articles/linux-socket-tcp-timeout-b3547af3.html">从linux源码看socket(tcp)的timeout</a>
+<a href="/blog/articles/linux-epoll-8d1f5086.html">从linux源码看epoll</a>
+  </aside>
+</main>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, securityLevel: "loose" });
+</script>
+</body>
+</html>

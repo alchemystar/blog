@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="笔者一直觉得如果能知道从应用到框架再到操作系统的每一处代码，是一件Exciting的事情。 今天笔者就从Linux源码的角度看下Server端的Socket在进行Accept的时候到底做了哪些事情(基于Linux 3.10内核)。 众所周知，一个Server端Socket的建立，需要socket、b...">
+  <title>从Linux源码看Socket(TCP)的accept - 苍天环绕的小世界</title>
+  <link rel="stylesheet" href="/blog/assets/site.css?v=20261007-contact-page">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="/blog/">苍天环绕的小世界</a>
+  <nav><a href="/blog/">首页</a><a class="nav-featured" href="/blog/featured.html">精品阅读</a><a href="/blog/#articles">文章</a><a href="/blog/contact.html">联系我</a></nav>
+</header>
+<main class="article-layout">
+  <aside class="article-aside">
+    <a class="back-link" href="/blog/">返回首页</a>
+    <div class="toc"><h2>目录</h2><a class="toc-level-1" href="#%E4%BB%8Elinux%E6%BA%90%E7%A0%81%E7%9C%8Bsocket-tcp-%E7%9A%84accept">从Linux源码看Socket(TCP)的accept</a>
+<a class="toc-level-2" href="#%E5%89%8D%E8%A8%80">前言</a>
+<a class="toc-level-1" href="#%E4%B8%80%E4%B8%AA%E6%9C%80%E7%AE%80%E5%8D%95%E7%9A%84server%E7%AB%AF%E4%BE%8B%E5%AD%90">一个最简单的Server端例子</a>
+<a class="toc-level-2" href="#accept%E7%B3%BB%E7%BB%9F%E8%B0%83%E7%94%A8">accept系统调用</a>
+<a class="toc-level-3" href="#epoll-%E5%9C%A8accept%E6%97%B6%E5%80%99-%E6%83%8A%E7%BE%A4">EPOLL(在accept时候)&quot;惊群&quot;</a>
+<a class="toc-level-3" href="#%E9%87%87%E7%94%A8so-reuseport%E8%A7%A3%E5%86%B3%E6%83%8A%E7%BE%A4">采用so_reuseport解决惊群</a>
+<a class="toc-level-2" href="#accept-queue%E5%85%A8%E8%BF%9E%E6%8E%A5%E9%98%9F%E5%88%97">accept_queue全连接队列</a>
+<a class="toc-level-1" href="#%E6%80%BB%E7%BB%93">总结</a></div>
+  </aside>
+  <article class="article">
+    <header class="article-title">
+      <div class="meta"><span>linux源码分析</span><time>2020.12.05</time><span>5 min read</span></div>
+      <h1>从Linux源码看Socket(TCP)的accept</h1>
+      <p>笔者一直觉得如果能知道从应用到框架再到操作系统的每一处代码，是一件Exciting的事情。 今天笔者就从Linux源码的角度看下Server端的Socket在进行Accept的时候到底做了哪些事情(基于Linux 3.10内核)。 众所周知，一个Server端Socket的建立，需要socket、b...</p>
+    </header>
+    <div class="prose"><h1 id="%E4%BB%8Elinux%E6%BA%90%E7%A0%81%E7%9C%8Bsocket-tcp-%E7%9A%84accept">从Linux源码看Socket(TCP)的accept</h1>
+<h2 id="%E5%89%8D%E8%A8%80">前言</h2>
+<p>笔者一直觉得如果能知道从应用到框架再到操作系统的每一处代码，是一件Exciting的事情。 今天笔者就从Linux源码的角度看下Server端的Socket在进行Accept的时候到底做了哪些事情(基于Linux 3.10内核)。</p>
+<h1 id="%E4%B8%80%E4%B8%AA%E6%9C%80%E7%AE%80%E5%8D%95%E7%9A%84server%E7%AB%AF%E4%BE%8B%E5%AD%90">一个最简单的Server端例子</h1>
+<p>众所周知，一个Server端Socket的建立，需要socket、bind、listen、accept四个步骤。 今天，笔者就聚焦于accept。</p>
+<p class="image-only"><img src="/blog/assets/source/image/accept/focus_accept.png" alt="codegen" loading="lazy"></p>
+<p>代码如下:</p>
+<pre><code class="language-">void start_server(){
+    // server fd
+    int sockfd_server;
+    // accept fd 
+    int sockfd;
+    int call_err;
+    struct sockaddr_in sock_addr;
+	 ......
+    call_err=bind(sockfd_server,(struct sockaddr*)(&amp;sock_addr),sizeof(sock_addr));
+ 	 ......
+    call_err=listen(sockfd_server,MAX_BACK_LOG);
+	 ......
+    while(1){
+        struct sockaddr_in* s_addr_client = mem_alloc(sizeof(struct sockaddr_in));
+              int client_length = sizeof(*s_addr_client);
+         // 这边就是我们今天的聚焦点accept
+        sockfd = accept(sockfd_server,(struct sockaddr_ *)(s_addr_client),(socklen_t *)&amp;(client_length));
+        if(sockfd == -1){
+            printf(&quot;Accept error!\n&quot;);
+            continue;
+        }
+        process_connection(sockfd,(struct sockaddr_in*)(&amp;s_addr_client));
+    }
+}</code></pre>
+<p>首先我们通过socket系统调用创建了一个Socket，其中指定了SOCK_STREAM,而且最后一个参数为0，也就是建立了一个通常所有的TCP Socket。在这里，我们直接给出TCP Socket所对应的ops也就是操作函数。</p>
+<p class="image-only"><img src="/blog/assets/source/image/remote/oscimg.oschina.net/up-ffb587cdd5c37946484f4b78df5053abdef-a0b673b7dcc8.png" alt="codegen" loading="lazy"></p>
+<h2 id="accept%E7%B3%BB%E7%BB%9F%E8%B0%83%E7%94%A8">accept系统调用</h2>
+<p>好了，我们直接进入accept系统调用吧。</p>
+<pre><code class="language-">#include &lt;sys/socket.h&gt;
+// 成功，返回代表新连接的描述符，错误返回-1,同时错误码设置在errno
+int accept(int sockfd,struct sockaddr* addr,socklen_t *addrlen);
+// 注意,实际上Linux还有个accept扩展accept4:
+// 额外添加的flags参数可以为新连接描述符设置O_NONBLOCK|O_CLOEXEC(执行exec后关闭)这两个标记
+int accept4(int sockfd, struct sockaddr *addr,socklen_t *addrlen, int flags);</code></pre>
+<p>注意，这边的accept调用是被glibc用SYSCALL_CANCEL包了一层，其将返回值修正为只有0和-1这两个选择，同时将错误码的绝对值设置在errno内。由于glibc对于系统调用的封装过于复杂，就不在这里细讲了。如果要寻找具体的逻辑，用</p>
+<pre><code class="language-">// 注意accept和(之间要有空格，不然搜索不到
+accept (int</code></pre>
+<p>在整个glibc代码中搜索即可。 理解accept的关键点是，它会创建一个新的Socket,这个新的Socket来与对端运行connect()的对等Socket进行连接，如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/accept/accept_new_fd.png" alt="codegen" loading="lazy"></p>
+<p>接下来，我们就进入Linux内核源码栈吧</p>
+<pre><code class="language-">accept
+ |-&gt;SYSCALL_CANCEL(accept......)
+   ......
+    |-&gt;SYSCALL_DEFINE3(accept
+     // 最终调用了sys_accept4
+     |-&gt;sys_accept4	
+      /* 检测监听描述符fd是否存在，不存在，返回-BADF
+	  |-&gt;sockfd_lookup_light
+	   |-&gt;sock_alloc /*新建Socket*/
+	     |-&gt;get_unused_fd_flags /*获取一个未用的fd*/
+	      |-&gt;sock-&gt;ops-&gt;accept(sock...) /*调用核心*/</code></pre>
+<p>上述流程如下面所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/accept/accept-frame.png" alt="codegen" loading="lazy"></p>
+<p>由此得知，核心函数在sock-&gt;ops-&gt;accept上，由于我们关注的是TCP,那么其实现即为 inet_stream_ops-&gt;accept也即inet_accept，再次跟踪下调用栈:</p>
+<pre><code class="language-">	sock-&gt;ops-&gt;accept
+		|-&gt;inet_steam_ops-&gt;accept(inet_accept)
+			/* 由一开始的sock图可知sk_prot=tcp_prot
+			|-&gt;sk1-&gt;sk_prot-&gt;accept
+				|-&gt;inet_csk_accept</code></pre>
+<p>好了，穿过了层层包装，终于到具体逻辑部分了。上代码:</p>
+<pre><code class="language-">struct sock *inet_csk_accept(struct sock *sk, int flags, int *err)
+{
+	struct inet_connection_sock *icsk = inet_csk(sk);
+	/* 获取当前监听sock的accept队列*/
+	struct request_sock_queue *queue = &amp;icsk-&gt;icsk_accept_queue;
+	......
+	/* 如果监听Socket状态非TCP_LISEN,返回错误 */
+	if (sk-&gt;sk_state != TCP_LISTEN)
+		goto out_err
+	/* 如果当前accept队列为空 */
+	if (reqsk_queue_empty(queue)) {
+		long timeo = sock_rcvtimeo(sk, flags &amp; O_NONBLOCK);
+		/* 如果是非阻塞模式，直接返回-EAGAIN */
+		error = -EAGAIN;
+		if (!timeo)
+			goto out_err;
+		/* 如果是阻塞模式，切超时时间不为0,则等待新连接进入队列 */
+		error = inet_csk_wait_for_connect(sk, timeo);
+		if (error)
+			goto out_err;
+	}	
+	/* 到这里accept queue不为空,从queue中获取一个连接 */
+	req = reqsk_queue_remove(queue);
+	newsk = req-&gt;sk;
+	/* fastopen 判断逻辑 */
+	......
+	/* 返回新的sock,也就是accept派生出的和client端对等的那个sock */
+	return newsk
+}</code></pre>
+<p>上面流程如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/accept/accept_step.png" alt="codegen" loading="lazy"></p>
+<p>我们关注下inet_csk_wait_for_connect,即accept的超时逻辑:</p>
+<pre><code class="language-">static int inet_csk_wait_for_connect(struct sock *sk, long timeo)
+{
+	for (;;) {
+		/* 通过增加EXCLUSIVE标志使得在BIO中调用accept中不会产生惊群效应 */
+		prepare_to_wait_exclusive(sk_sleep(sk), &amp;wait,
+					  TASK_INTERRUPTIBLE);
+		if (reqsk_queue_empty(&amp;icsk-&gt;icsk_accept_queue))
+			timeo = schedule_timeout(timeo);
+		.......
+		err = -EAGAIN;
+		/* 这边accept超时，返回的是-EAGAIN */
+		if (!timeo)
+			break;
+	}
+	finish_wait(sk_sleep(sk), &amp;wait);
+	return err;						
+}</code></pre>
+<p>通过exclusice标志使得我们在BIO中调用accept(不用epoll/select等)时，不会惊群。 由代码得知在accept超时时候返回(errno)的是EAGAIN而不是ETIMEOUT。</p>
+<h3 id="epoll-%E5%9C%A8accept%E6%97%B6%E5%80%99-%E6%83%8A%E7%BE%A4">EPOLL(在accept时候)&quot;惊群&quot;</h3>
+<p>由于在EPOLL LT(水平触发模式下),一次accept事件，可能会唤醒多个等待在此listen fd上的(epoll_wait)线程,而最终可能只有一个能成功的获取到新连接(newfd),其它的都是-EGAIN，也即有一些不必要的线程被唤醒了，做了无用功。关于epoll的原理可以看下笔者之前的博客《从linux源码看epoll》:</p>
+<pre><code class="language-">https://my.oschina.net/alchemystar/blog/3008840</code></pre>
+<p>在这里描述一下原因,核心就是epoll_wait在水平触发下会在这个fd仍有未处理事件的时候重新塞回ready_list并在此唤醒另一个等待在epoll上的进程！</p>
+<p class="image-only"><img src="/blog/assets/source/image/accept/epoll_thunder_herd.png" alt="codegen" loading="lazy"></p>
+<p>所以我们看到，虽然epoll_wait的时候给自己加了exclusive不会在有中断事件触发的时候惊群，但是水平触发这个机制确也造成了类似&quot;惊群&quot;的现象！ 由上面的讨论看出，fd1仍旧有事件是造成额外唤醒的原因，这个也很好理解，毕竟这个事件是另一个线程处理的，那个线程估摸着还没来得及运行，自然也来不及处理！ 我们看下在accept事件中，怎么判定这个fd(listen sock的fd)还有未处理事件的。</p>
+<pre><code class="language-">// 通过f_op-&gt;poll判定
+epi-&gt;ffd.file-&gt;f_op-&gt;poll
+	|-&gt;tcp_poll
+		/* 如果sock是listen状态，则由下面函数负责 */
+		|-&gt;inet_csk_listen_poll
+		
+/* 通过accept_queue队列是否为空判断监听sock是否有未处理事件*/
+static inline unsigned int inet_csk_listen_poll(const struct sock *sk)
+{
+	return !reqsk_queue_empty(&amp;inet_csk(sk)-&gt;icsk_accept_queue) ?
+			(POLLIN | POLLRDNORM) : 0;
+}</code></pre>
+<p>那么我们就可以根据逻辑画出时序图了。</p>
+<p class="image-only"><img src="/blog/assets/source/image/accept/thunder_herd_timeline.png" alt="codegen" loading="lazy"></p>
+<p>其实不仅仅是accept,要是多线程epoll_wait同一个fd的read/write也是同样的惊群，只不过应该不会有人这么做吧。 正是由于这种&quot;惊群&quot;效应的存在，所以我们经常采用单开一个线程去专门accept的形式，例如reactor模式即是如此。但是，如果一瞬间有大量连接涌进来，单线程处理还是有瓶颈的,无法充分利用多核的优势,在海量短连接场景下就显得稍显无力了。这也是有解决方式的！</p>
+<h3 id="%E9%87%87%E7%94%A8so-reuseport%E8%A7%A3%E5%86%B3%E6%83%8A%E7%BE%A4">采用so_reuseport解决惊群</h3>
+<p>前面讲过，由于我们是在同一个fd上多线程去运行epoll_wait才会有此问题，那么其实我们多开几个fd就解决了。首先想到的方案是，多开几个端口号，人为分开监听fd，但这个明显带来了额外的复杂性。为了解决这一问题，Linux提供了so_reuseport这个参数，其原理如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/remote/oscimg.oschina.net/up-eedc10f033af093e58fd956a3fc540f68ed-c5a01d7b38c8.png" alt="codegen" loading="lazy"></p>
+<p>多个fd监听同一个端口号，在内核中做负载均衡(Sharding),将accept的任务分散到不同的线程的不同Socket上(Sharding)，毫无疑问可以利用多核能力，大幅提升连接成功后的Socket分发能力。那么我们的线程模型也可以改为用多线程accept了，如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/remote/oscimg.oschina.net/up-d8005808a80d033da48b7618654ed3211a3-6a5b88d597f9.png" alt="codegen" loading="lazy"></p>
+<h2 id="accept-queue%E5%85%A8%E8%BF%9E%E6%8E%A5%E9%98%9F%E5%88%97">accept_queue全连接队列</h2>
+<p>在前面的讨论中,accept_queue是accept系统调用中的核心成员，那么这个accept_queue是怎么被填充(add)的呢?如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/remote/oscimg.oschina.net/up-9900f7a4b655332540d88b9d992ab041131-7f10381f4293.png" alt="codegen" loading="lazy"></p>
+<p>图中展示了client和server在三次交互中，accept_queue(全连接队列)和syn_table半连接hash表的变迁情况。在accept_queue被填充后，由用户线程通过accept系统调用从队列中获取对应的fd</p>
+<p class="image-only"><img src="/blog/assets/source/image/remote/oscimg.oschina.net/up-62137fc0a406837916cd5698d1bdadc6857-b02640f9c98e.png" alt="codegen" loading="lazy"></p>
+<p>值得注意的是，当用户线程来不及处理的时候，内核会drop掉三次握手成功的连接，导致一些诡异的现象，具体可以看笔者的另一篇博客《解Bug之路-dubbo流量上线时的非平滑问题》:</p>
+<pre><code class="language-">https://my.oschina.net/alchemystar/blog/3098219</code></pre>
+<p>另外，对于accept_queue具体的填充机制以及源码，可以见笔者另一篇博客的详细分析 《从Linux源码看Socket(TCP)的listen及连接队列》：</p>
+<pre><code class="language-">https://my.oschina.net/alchemystar/blog/4672630</code></pre>
+<h1 id="%E6%80%BB%E7%BB%93">总结</h1>
+<p>Linux内核源码博大精深，每次扎进去探索时候都会废寝忘食，其间可以看到各种优雅的设计，在此分享出来，希望对读者有所帮助。欢迎大家关注我公众号，里面有各种干货，还有大礼包相送哦!</p>
+<p class="image-only"><img src="/blog/assets/source/image/remote/oscimg.oschina.net/up-2e9a0d2a1798d1fdd8738b1114742015fa1-5397f797ce35.png" alt="codegen" loading="lazy"></p></div>
+    <nav class="prev-next"><a href="/blog/articles/post-d9d326ca.html"><small>上一篇</small><span>产线内存&quot;耗尽&quot;</span></a><a href="/blog/articles/linux-socket-tcp-bind-c32706d2.html"><small>下一篇</small><span>从Linux源码看Socket(TCP)的bind</span></a></nav>
+  </article>
+  <aside class="article-related">
+    <h2>同类文章</h2><a href="/blog/articles/linux-socket-tcp-listen-d1e99aff.html">从Linux源码看Socket(TCP)的listen及连接队列</a>
+<a href="/blog/articles/tcp-syncookie-0db101f6.html">tcp_syncookie的坑</a>
+<a href="/blog/articles/linux-tcp-304f12e7.html">Linux上TCP的几个内核参数调优</a>
+<a href="/blog/articles/linux-time-wait-4a2c9b4c.html">从Linux源码看TIME_WAIT状态的持续时间</a>
+<a href="/blog/articles/linux-socket-tcp-bind-c32706d2.html">从Linux源码看Socket(TCP)的bind</a>
+<a href="/blog/articles/linux-socket-close-d72a4843.html">从linux源码看socket的close</a>
+<a href="/blog/articles/socket-d81c1e8d.html">网络编程里的socket</a>
+<a href="/blog/articles/linux-socket-tcp-timeout-b3547af3.html">从linux源码看socket(tcp)的timeout</a>
+<a href="/blog/articles/linux-epoll-8d1f5086.html">从linux源码看epoll</a>
+  </aside>
+</main>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, securityLevel: "loose" });
+</script>
+</body>
+</html>

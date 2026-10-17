@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="核心反常点：支付成功后主子数据偶发只有一边被读到，表面像原子性破坏，实际要回到事务边界、读路径和主从/缓存时序看。">
+  <title>日常问题排查-偶发性读数据不一致 - 苍天环绕的小世界</title>
+  <link rel="stylesheet" href="/blog/assets/site.css?v=20261007-contact-page">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="/blog/">苍天环绕的小世界</a>
+  <nav><a href="/blog/">首页</a><a class="nav-featured" href="/blog/featured.html">精品阅读</a><a href="/blog/#articles">文章</a><a href="/blog/contact.html">联系我</a></nav>
+</header>
+<main class="article-layout">
+  <aside class="article-aside">
+    <a class="back-link" href="/blog/">返回首页</a>
+    <div class="toc"><h2>目录</h2><a class="toc-level-1" href="#%E6%97%A5%E5%B8%B8%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5-%E5%81%B6%E5%8F%91%E6%80%A7%E8%AF%BB%E6%95%B0%E6%8D%AE%E4%B8%8D%E4%B8%80%E8%87%B4">日常问题排查-偶发性读数据不一致</a>
+<a class="toc-level-1" href="#%E5%89%8D%E8%A8%80">前言</a>
+<a class="toc-level-1" href="#bug%E7%8E%B0%E5%9C%BA">Bug现场</a>
+<a class="toc-level-2" href="#%E4%B8%9A%E5%8A%A1%E5%9C%BA%E6%99%AF">业务场景</a>
+<a class="toc-level-2" href="#bug%E7%8E%B0%E5%9C%BA-2">Bug现场</a>
+<a class="toc-level-1" href="#%E6%80%9D%E8%B7%AF">思路</a>
+<a class="toc-level-2" href="#%E7%9F%9B%E7%9B%BE%E7%82%B9">矛盾点</a>
+<a class="toc-level-1" href="#%E6%8C%87%E5%AE%9A%E5%BA%93%E6%9F%A5%E8%AF%A2%E9%9A%94%E7%A6%BB%E7%BA%A7%E5%88%AB">指定库查询隔离级别</a>
+<a class="toc-level-1" href="#%E5%90%8E%E7%BB%AD%E4%BF%AE%E5%A4%8D">后续修复</a>
+<a class="toc-level-1" href="#%E6%80%BB%E7%BB%93">总结</a></div>
+  </aside>
+  <article class="article">
+    <header class="article-title">
+      <div class="meta"><span>日常问题排查</span><time>2024.05.19</time><span>2 min read</span></div>
+      <h1>日常问题排查-偶发性读数据不一致</h1>
+      <p>核心反常点：支付成功后主子数据偶发只有一边被读到，表面像原子性破坏，实际要回到事务边界、读路径和主从/缓存时序看。</p>
+    </header>
+    <div class="prose"><h1 id="%E6%97%A5%E5%B8%B8%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5-%E5%81%B6%E5%8F%91%E6%80%A7%E8%AF%BB%E6%95%B0%E6%8D%AE%E4%B8%8D%E4%B8%80%E8%87%B4">日常问题排查-偶发性读数据不一致</h1>
+<h1 id="%E5%89%8D%E8%A8%80">前言</h1>
+<p>日常问题排查系列都是一些简单Bug的排查。笔者将在这里介绍一些排查Bug的简单技巧，同时顺便积累素材。</p>
+<h1 id="bug%E7%8E%B0%E5%9C%BA">Bug现场</h1>
+<h2 id="%E4%B8%9A%E5%8A%A1%E5%9C%BA%E6%99%AF">业务场景</h2>
+<p>先描述这个问题出现的业务场景。这是一个支付的场景，如果支付成功了，我们就把支付状态置为success(主单据更新)同时写入支付成功时间戳为t1(子单据更新)。支付成功之后，我们还需要做其它的动作，做这个动作的时候我们需要刚才的支付成功时间戳t1。那么，我们正常的请求顺序即为:</p>
+<p class="image-only"><img src="/blog/assets/source/image/rc_and_rr/normal_process.png" alt="" loading="lazy"></p>
+<h2 id="bug%E7%8E%B0%E5%9C%BA-2">Bug现场</h2>
+<p>奇怪的是，线上运行时候，会有极小的概率(大概是几亿分之一)获取的这个时间戳为0！也即在读到主单为success的时候，看到的子单时间戳是0！由于时间戳为0，所以调用下游RPC传参错误导致了调用失败。 如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/rc_and_rr/error_process.png" alt="" loading="lazy"></p>
+<h1 id="%E6%80%9D%E8%B7%AF">思路</h1>
+<p>因为在请求1中，我们是在事务内更新的，数据应该始终保持一致才对。那很直观的第一个思考点就是： 思路1: 是不是事务没生效？笔者看了下源代码，使用没有问题，也不存在类内方法互相调用的情况。再者说，如果事务没生效，概率不至于这么低。 思路2:稍加思索一下，好像这个是事务隔离级别的原因。在这个Case里面，看上去数据库采用的RC隔离级别，也就是读已提交。如下图所示：</p>
+<p class="image-only"><img src="/blog/assets/source/image/rc_and_rr/read_commit.png" alt="" loading="lazy"></p>
+<pre><code class="language-">t1时刻，请求2查询到的子单据时间戳为0
+t2时刻，请求1提交，这时候将子单据时间戳更新为t1,主单据状态为success
+t3时刻，请求2由于RC隔离级别，能看到请求1的提交，主单状态为success，所以判定可以进行下游RPC的调用，但是由于在t1时刻获取到的时间戳为0，导致调用失败</code></pre>
+<h2 id="%E7%9F%9B%E7%9B%BE%E7%82%B9">矛盾点</h2>
+<p>数据库隔离级别是RC应该能非常好的解释出现Bug时的行为。于是笔者查了一下隔离级别，发现是RR，这就陷入了矛盾！但由于RC这个隔离级别解释这个Bug非常的靠谱，所以笔者看了下业务的数据库配置，发现它有100个库。那么就自然有了下一步猜想：这100个库中有的是RR的，有的是RC的。出问题的那个库正好就是RC的。</p>
+<h1 id="%E6%8C%87%E5%AE%9A%E5%BA%93%E6%9F%A5%E8%AF%A2%E9%9A%94%E7%A6%BB%E7%BA%A7%E5%88%AB">指定库查询隔离级别</h1>
+<p>于是笔者就根据业务的shardKey到了指定的库查询隔离级别，发现它果然是RC级别的，真相大白！这100个库中大概有1/3的库是RC隔离级别。</p>
+<p class="image-only"><img src="/blog/assets/source/image/rc_and_rr/rr_and_rc.png" alt="" loading="lazy"></p>
+<h1 id="%E5%90%8E%E7%BB%AD%E4%BF%AE%E5%A4%8D">后续修复</h1>
+<p>这个问题是由于DBA在换库的过程中采用了默认的配置，导致原来设置为RR级别的库在换了大容量机器后被默认改成了RC隔离级别。DBA找了个时间将隔离级别切换回RR后问题就消失了，并编写了相应的巡检脚本防止此类问题再次发生。</p>
+<h1 id="%E6%80%BB%E7%BB%93">总结</h1>
+<p>隔离级别是比较微妙的，相关问题大多只在高并发大流量下才会有偶发性的显现，分库分表集群中不同DB的隔离级别由于种种原因导致的不一致会加大问题的排查难度。有时候遇到无法解释问题时可以考虑下底层组件的设置问题。</p>
+<p class="image-only"><img src="/blog/assets/source/image/remote/oscimg.oschina.net/up-0124e4cdd8e9cecb13071dad7b6544ebb71-ff1bfa7e71cd.png" alt="" loading="lazy"></p></div>
+    <nav class="prev-next"><a href="/blog/articles/mq-a6fe4c2d.html"><small>上一篇</small><span>日常问题排查-mq不消费</span></a><a href="/blog/articles/cpu-busy-5-7a232df0.html"><small>下一篇</small><span>日常问题排查-同应用同流量，为什么CPU.busy差了 5 倍？</span></a></nav>
+  </article>
+  <aside class="article-related">
+    <h2>同类文章</h2><a href="/blog/articles/younggc-84c79a21.html">日常问题排查-Younggc突然变长</a>
+<a href="/blog/articles/post-ce618c61.html">日常问题排查-空闲一段时间再请求就超时</a>
+<a href="/blog/articles/dns-5b7836f2.html">日常问题排查-奇怪的DNS</a>
+<a href="/blog/articles/mvcc-for-update-6ea5409f.html">日常问题排查-MVCC和for update混用导致读数据不一致</a>
+<a href="/blog/articles/post-0abe94ca.html">日常问题排查-改表时读数据不一致</a>
+<a href="/blog/articles/post-df9748ee.html">日常问题排查-连接突然全部关闭</a>
+<a href="/blog/articles/post-625093a1.html">日常问题排查-集群逐步失去响应</a>
+<a href="/blog/articles/mq-a6fe4c2d.html">日常问题排查-mq不消费</a>
+<a href="/blog/articles/post-aba46ada.html">日常问题排查-读从库没有原子性？</a>
+<a href="/blog/articles/redis-d4ca6a5a.html">日常问题排查-系统失去响应-Redis使用不当</a>
+<a href="/blog/articles/post-e443a4a8.html">日常问题排查-请求偶尔超时-磁盘故障</a>
+<a href="/blog/articles/post-ff1bd808.html">日常问题排查-调用超时</a>
+<a href="/blog/articles/cpu-busy-5-7a232df0.html">日常问题排查-同应用同流量，为什么CPU.busy差了 5 倍？</a>
+  </aside>
+</main>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, securityLevel: "loose" });
+</script>
+</body>
+</html>

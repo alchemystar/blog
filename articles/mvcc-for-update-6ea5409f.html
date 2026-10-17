@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="核心反常点：同一事务里更新 A/B 后，另一个事务只读到 A 的新值却读不到 B，新旧版本混在一起，根因在普通快照读与 for update 当前读混用。">
+  <title>日常问题排查-MVCC和for update混用导致读数据不一致 - 苍天环绕的小世界</title>
+  <link rel="stylesheet" href="/blog/assets/site.css?v=20261007-contact-page">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="/blog/">苍天环绕的小世界</a>
+  <nav><a href="/blog/">首页</a><a class="nav-featured" href="/blog/featured.html">精品阅读</a><a href="/blog/#articles">文章</a><a href="/blog/contact.html">联系我</a></nav>
+</header>
+<main class="article-layout">
+  <aside class="article-aside">
+    <a class="back-link" href="/blog/">返回首页</a>
+    <div class="toc"><h2>目录</h2><a class="toc-level-1" href="#%E6%97%A5%E5%B8%B8%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5-mvcc%E5%92%8Cfor-update%E6%B7%B7%E7%94%A8%E5%AF%BC%E8%87%B4%E8%AF%BB%E6%95%B0%E6%8D%AE%E4%B8%8D%E4%B8%80%E8%87%B4">日常问题排查-MVCC和for update混用导致读数据不一致</a>
+<a class="toc-level-1" href="#%E5%89%8D%E8%A8%80">前言</a>
+<a class="toc-level-1" href="#bug%E7%8E%B0%E5%9C%BA">Bug现场</a>
+<a class="toc-level-1" href="#%E6%80%9D%E8%B7%AF">思路</a>
+<a class="toc-level-1" href="#%E8%A7%A3%E5%86%B3%E6%96%B9%E6%A1%88">解决方案</a>
+<a class="toc-level-1" href="#%E6%80%BB%E7%BB%93">总结</a></div>
+  </aside>
+  <article class="article">
+    <header class="article-title">
+      <div class="meta"><span>日常问题排查</span><time>2024.04.25</time><span>1 min read</span></div>
+      <h1>日常问题排查-MVCC和for update混用导致读数据不一致</h1>
+      <p>核心反常点：同一事务里更新 A/B 后，另一个事务只读到 A 的新值却读不到 B，新旧版本混在一起，根因在普通快照读与 for update 当前读混用。</p>
+    </header>
+    <div class="prose"><h1 id="%E6%97%A5%E5%B8%B8%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5-mvcc%E5%92%8Cfor-update%E6%B7%B7%E7%94%A8%E5%AF%BC%E8%87%B4%E8%AF%BB%E6%95%B0%E6%8D%AE%E4%B8%8D%E4%B8%80%E8%87%B4">日常问题排查-MVCC和for update混用导致读数据不一致</h1>
+<h1 id="%E5%89%8D%E8%A8%80">前言</h1>
+<p>日常问题排查系列都是一些简单Bug的排查。笔者将在这里介绍一些排查Bug的简单技巧，同时顺便积累素材。</p>
+<h1 id="bug%E7%8E%B0%E5%9C%BA">Bug现场</h1>
+<p>又是喜闻乐见的读数据不一致的问题。这次的问题是这样，业务在一个事务中更新A和B两个表的两个数据。但是在另一个事务中只看到了A的更新，而B依旧是更新之前的值。说好的原子性感觉又被打破了。如下图所示：</p>
+<p class="image-only"><img src="/blog/assets/source/image/select_with_for_update/select_no_consist.png" alt="" loading="lazy"></p>
+<h1 id="%E6%80%9D%E8%B7%AF">思路</h1>
+<p>在将这两个请求的SQL按照时序画出来的时候，笔者立马就明白了相关问题所在。核心就在于数据库是RR隔离级别的，同时业务在查询A的时候使用的是Select for update，在查询B的时候使用的是普通的Select。这么使用的原因可能是觉得所有的查询都需要先查A再查B，那么只需要对A加锁就行，减少了数据库锁的数量。 但是，这里是有一个问题的，就是对B表的查询用的是普通的Select，也就是使用了MySQL的MVCC机制。而MySQL MVCC的默认创建时刻就是事务的第一个不带for update的普通Select(具体原理见笔者的博客https://my.oschina.net/alchemystar/blog/1927425）。那么我们就可以从上面的SQL顺序可以看到，在事务1开始之前就已经创建了视图，此时的视图是A1和B1。那么由于RR，查询B表的普通Select看到的自然是B1，而select for update不走MVCC，于是看到的是A2。如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/select_with_for_update/read_view.png" alt="" loading="lazy"></p>
+<h1 id="%E8%A7%A3%E5%86%B3%E6%96%B9%E6%A1%88">解决方案</h1>
+<p>让业务对B表的查询也用Select for update即可，相比于不一致增加的一点非热点行锁的性能可以忽略不计。</p>
+<h1 id="%E6%80%BB%E7%BB%93">总结</h1>
+<p>MVCC和数据库锁两者采用了不同的机制，如果不清楚其中的原理可能会导致不一致的现象出现。同时，在这次的问题中业务对于B表不用锁这样的优化实际上是一个负优化。这再次提醒我们，不要过早优化！</p>
+<p class="image-only"><img src="/blog/assets/source/image/remote/oscimg.oschina.net/up-0124e4cdd8e9cecb13071dad7b6544ebb71-ff1bfa7e71cd.png" alt="" loading="lazy"></p></div>
+    <nav class="prev-next"><a href="/blog/articles/post-0b648183.html"><small>上一篇</small><span>我的编程之旅</span></a><a href="/blog/articles/younggc-84c79a21.html"><small>下一篇</small><span>日常问题排查-Younggc突然变长</span></a></nav>
+  </article>
+  <aside class="article-related">
+    <h2>同类文章</h2><a href="/blog/articles/younggc-84c79a21.html">日常问题排查-Younggc突然变长</a>
+<a href="/blog/articles/post-ce618c61.html">日常问题排查-空闲一段时间再请求就超时</a>
+<a href="/blog/articles/dns-5b7836f2.html">日常问题排查-奇怪的DNS</a>
+<a href="/blog/articles/post-a12062b0.html">日常问题排查-偶发性读数据不一致</a>
+<a href="/blog/articles/post-0abe94ca.html">日常问题排查-改表时读数据不一致</a>
+<a href="/blog/articles/post-df9748ee.html">日常问题排查-连接突然全部关闭</a>
+<a href="/blog/articles/post-625093a1.html">日常问题排查-集群逐步失去响应</a>
+<a href="/blog/articles/mq-a6fe4c2d.html">日常问题排查-mq不消费</a>
+<a href="/blog/articles/post-aba46ada.html">日常问题排查-读从库没有原子性？</a>
+<a href="/blog/articles/redis-d4ca6a5a.html">日常问题排查-系统失去响应-Redis使用不当</a>
+<a href="/blog/articles/post-e443a4a8.html">日常问题排查-请求偶尔超时-磁盘故障</a>
+<a href="/blog/articles/post-ff1bd808.html">日常问题排查-调用超时</a>
+<a href="/blog/articles/cpu-busy-5-7a232df0.html">日常问题排查-同应用同流量，为什么CPU.busy差了 5 倍？</a>
+  </aside>
+</main>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, securityLevel: "loose" });
+</script>
+</body>
+</html>

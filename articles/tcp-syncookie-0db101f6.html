@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="最近笔者阅读资料的时候，发现竟然会有这种坑。如下图所示: 这个坑触发需要以下几个条件: 在这种情况下，Server竟然会认为没有收到的第一个packet是确认了的，导致客户端认为第一个&quot;dog&quot;收到了,实际Server应用端完全没有感知！ 如果第一个包3bytes的时候，在上面的情况下，由于chec...">
+  <title>tcp_syncookie的坑 - 苍天环绕的小世界</title>
+  <link rel="stylesheet" href="/blog/assets/site.css?v=20261007-contact-page">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="/blog/">苍天环绕的小世界</a>
+  <nav><a href="/blog/">首页</a><a class="nav-featured" href="/blog/featured.html">精品阅读</a><a href="/blog/#articles">文章</a><a href="/blog/contact.html">联系我</a></nav>
+</header>
+<main class="article-layout">
+  <aside class="article-aside">
+    <a class="back-link" href="/blog/">返回首页</a>
+    <div class="toc"><h2>目录</h2><a class="toc-level-1" href="#tcp-syncookie%E7%9A%84%E5%9D%91">tcp_syncookie的坑</a></div>
+  </aside>
+  <article class="article">
+    <header class="article-title">
+      <div class="meta"><span>linux源码分析</span><time>2021.07.07</time><span>1 min read</span></div>
+      <h1>tcp_syncookie的坑</h1>
+      <p>最近笔者阅读资料的时候，发现竟然会有这种坑。如下图所示: 这个坑触发需要以下几个条件: 在这种情况下，Server竟然会认为没有收到的第一个packet是确认了的，导致客户端认为第一个&quot;dog&quot;收到了,实际Server应用端完全没有感知！ 如果第一个包3bytes的时候，在上面的情况下，由于chec...</p>
+    </header>
+    <div class="prose"><h1 id="tcp-syncookie%E7%9A%84%E5%9D%91">tcp_syncookie的坑</h1>
+<p>最近笔者阅读资料的时候，发现竟然会有这种坑。如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/syncookie/eat_3_bytes.png" alt="codegen" loading="lazy"></p>
+<p>这个坑触发需要以下几个条件:</p>
+<pre><code class="language-">1.开启tcp\_syncookie
+2.client端的三次握手的第三次ACK没有发送到对端
+3.client端的第一个packet是小于3字节,也没有发送到对端
+4.在client任何重传发生之前，client又发送了一个数据包，这次送达了。</code></pre>
+<p>在这种情况下，Server竟然会认为没有收到的第一个packet是确认了的，导致客户端认为第一个&quot;dog&quot;收到了,实际Server应用端完全没有感知！ 如果第一个包&gt;3bytes的时候，在上面的情况下，由于check_tcp_syn_cookie不过，会被Reset。好歹保证了TCP的可靠性：）</p>
+<p>笔者的3.10内核就是如此，不知道新版本有没有变化！</p></div>
+    <nav class="prev-next"><a href="/blog/articles/ntp-8613284a.html"><small>上一篇</small><span>ntp导致的时钟回拨</span></a><a href="/blog/articles/post-d9d326ca.html"><small>下一篇</small><span>产线内存&quot;耗尽&quot;</span></a></nav>
+  </article>
+  <aside class="article-related">
+    <h2>同类文章</h2><a href="/blog/articles/linux-socket-tcp-listen-d1e99aff.html">从Linux源码看Socket(TCP)的listen及连接队列</a>
+<a href="/blog/articles/linux-tcp-304f12e7.html">Linux上TCP的几个内核参数调优</a>
+<a href="/blog/articles/linux-socket-tcp-accept-e8523e42.html">从Linux源码看Socket(TCP)的accept</a>
+<a href="/blog/articles/linux-time-wait-4a2c9b4c.html">从Linux源码看TIME_WAIT状态的持续时间</a>
+<a href="/blog/articles/linux-socket-tcp-bind-c32706d2.html">从Linux源码看Socket(TCP)的bind</a>
+<a href="/blog/articles/linux-socket-close-d72a4843.html">从linux源码看socket的close</a>
+<a href="/blog/articles/socket-d81c1e8d.html">网络编程里的socket</a>
+<a href="/blog/articles/linux-socket-tcp-timeout-b3547af3.html">从linux源码看socket(tcp)的timeout</a>
+<a href="/blog/articles/linux-epoll-8d1f5086.html">从linux源码看epoll</a>
+  </aside>
+</main>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, securityLevel: "loose" });
+</script>
+</body>
+</html>

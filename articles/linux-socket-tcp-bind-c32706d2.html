@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="笔者一直觉得如果能知道从应用到框架再到操作系统的每一处代码，是一件Exciting的事情。 今天笔者就来从Linux源码的角度看下Server端的Socket在进行bind的时候到底做了哪些事情(基于Linux 3.10内核)。 众所周知，一个Server端Socket的建立，需要socket、bi...">
+  <title>从Linux源码看Socket(TCP)的bind - 苍天环绕的小世界</title>
+  <link rel="stylesheet" href="/blog/assets/site.css?v=20261007-contact-page">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="/blog/">苍天环绕的小世界</a>
+  <nav><a href="/blog/">首页</a><a class="nav-featured" href="/blog/featured.html">精品阅读</a><a href="/blog/#articles">文章</a><a href="/blog/contact.html">联系我</a></nav>
+</header>
+<main class="article-layout">
+  <aside class="article-aside">
+    <a class="back-link" href="/blog/">返回首页</a>
+    <div class="toc"><h2>目录</h2><a class="toc-level-1" href="#%E4%BB%8Elinux%E6%BA%90%E7%A0%81%E7%9C%8Bsocket-tcp-%E7%9A%84bind">从Linux源码看Socket(TCP)的bind</a>
+<a class="toc-level-2" href="#%E5%89%8D%E8%A8%80">前言</a>
+<a class="toc-level-2" href="#%E4%B8%80%E4%B8%AA%E6%9C%80%E7%AE%80%E5%8D%95%E7%9A%84server%E7%AB%AF%E4%BE%8B%E5%AD%90">一个最简单的Server端例子</a>
+<a class="toc-level-2" href="#bind%E7%B3%BB%E7%BB%9F%E8%B0%83%E7%94%A8">bind系统调用</a>
+<a class="toc-level-2" href="#inet-bind">inet_bind</a>
+<a class="toc-level-2" href="#inet-csk-get-port">inet_csk_get_port</a>
+<a class="toc-level-3" href="#%E7%AC%AC%E4%B8%80%E6%AE%B5-%E5%A6%82%E6%9E%9Cbind-port%E4%B8%BA0-%E9%9A%8F%E6%9C%BA%E6%90%9C%E7%B4%A2%E5%8F%AF%E7%94%A8%E7%AB%AF%E5%8F%A3%E5%8F%B7">第一段，如果bind port为0，随机搜索可用端口号</a>
+<a class="toc-level-3" href="#%E7%AC%AC%E4%BA%8C%E6%AE%B5-%E6%89%BE%E5%88%B0%E7%AB%AF%E5%8F%A3%E5%8F%B7%E6%88%96%E5%B7%B2%E7%BB%8F%E6%8C%87%E5%AE%9A">第二段，找到端口号或已经指定</a>
+<a class="toc-level-2" href="#%E5%88%A4%E6%96%AD%E7%AB%AF%E5%8F%A3%E5%8F%B7%E6%98%AF%E5%90%A6%E5%86%B2%E7%AA%81">判断端口号是否冲突</a>
+<a class="toc-level-2" href="#so-reuseaddr%E5%92%8Cso-reuseport">SO_REUSEADDR和SO_REUSEPORT</a>
+<a class="toc-level-2" href="#so-reuseaddr">SO_REUSEADDR</a>
+<a class="toc-level-2" href="#so-reuseport">SO_REUSEPORT</a>
+<a class="toc-level-2" href="#nginx%E5%B7%B2%E7%BB%8F%E9%87%87%E7%94%A8so-reuseport">Nginx已经采用SO_REUSEPORT</a>
+<a class="toc-level-2" href="#%E6%80%BB%E7%BB%93">总结</a></div>
+  </aside>
+  <article class="article">
+    <header class="article-title">
+      <div class="meta"><span>linux源码分析</span><time>2020.10.11</time><span>6 min read</span></div>
+      <h1>从Linux源码看Socket(TCP)的bind</h1>
+      <p>笔者一直觉得如果能知道从应用到框架再到操作系统的每一处代码，是一件Exciting的事情。 今天笔者就来从Linux源码的角度看下Server端的Socket在进行bind的时候到底做了哪些事情(基于Linux 3.10内核)。 众所周知，一个Server端Socket的建立，需要socket、bi...</p>
+    </header>
+    <div class="prose"><h1 id="%E4%BB%8Elinux%E6%BA%90%E7%A0%81%E7%9C%8Bsocket-tcp-%E7%9A%84bind">从Linux源码看Socket(TCP)的bind</h1>
+<h2 id="%E5%89%8D%E8%A8%80">前言</h2>
+<p>笔者一直觉得如果能知道从应用到框架再到操作系统的每一处代码，是一件Exciting的事情。 今天笔者就来从Linux源码的角度看下Server端的Socket在进行bind的时候到底做了哪些事情(基于Linux 3.10内核)。</p>
+<h2 id="%E4%B8%80%E4%B8%AA%E6%9C%80%E7%AE%80%E5%8D%95%E7%9A%84server%E7%AB%AF%E4%BE%8B%E5%AD%90">一个最简单的Server端例子</h2>
+<p>众所周知，一个Server端Socket的建立，需要socket、bind、listen、accept四个步骤。</p>
+<p class="image-only"><img src="/blog/assets/source/image/bind/focus_bind.png" alt="codegen" loading="lazy"></p>
+<p>代码如下:</p>
+<pre><code class="language-">void start_server(){
+    // server fd
+    int sockfd_server;
+    // accept fd 
+    int sockfd;
+    int call_err;
+    struct sockaddr_in sock_addr;
+
+    sockfd_server = socket(AF_INET,SOCK_STREAM,0);
+    memset(&amp;sock_addr,0,sizeof(sock_addr));
+    sock_addr.sin_family = AF_INET;
+    sock_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    sock_addr.sin_port = htons(SERVER_PORT);
+    // 这边就是我们今天的聚焦点bind
+    call_err=bind(sockfd_server,(struct sockaddr*)(&amp;sock_addr),sizeof(sock_addr));
+    if(call_err == -1){
+        fprintf(stdout,&quot;bind error!\n&quot;);
+        exit(1);
+    }
+    // listen
+    call_err=listen(sockfd_server,MAX_BACK_LOG);
+    if(call_err == -1){
+        fprintf(stdout,&quot;listen error!\n&quot;);
+        exit(1);
+    }
+}</code></pre>
+<p>首先我们通过socket系统调用创建了一个socket，其中指定了SOCK_STREAM,而且最后一个参数为0，也就是建立了一个通常所有的TCP Socket。在这里，我们直接给出TCP Socket所对应的ops也就是操作函数。</p>
+<p class="image-only"><img src="/blog/assets/source/image/nonblock/socket_ops_prot.png" alt="codegen" loading="lazy"></p>
+<p>如果你想知道上图中的结构是怎么来的，可以看下笔者以前的博客:</p>
+<pre><code class="language-">https://my.oschina.net/alchemystar/blog/1791017</code></pre>
+<h2 id="bind%E7%B3%BB%E7%BB%9F%E8%B0%83%E7%94%A8">bind系统调用</h2>
+<p>bind将一个本地协议地址(protocol:ip:port)赋予一个套接字。例如32位的ipv4地址或128位的ipv6地址+16位的TCP活UDP端口号。</p>
+<pre><code class="language-">#include &lt;sys/socket.h&gt;
+// 返回，若成功则为0，若出错则为-1
+int bind(int sockfd, const struct sockaddr *myaddr, socklen_t addrlen); </code></pre>
+<p>好了，我们直接进入Linux源码调用栈吧。</p>
+<pre><code class="language-">bind
+	// 这边由系统调用的返回值会被glibc的INLINE_SYSCALL包一层
+	// 若有错误，则设置返回值为-1,同时将系统调用的返回值的绝对值设置给errno
+	|-&gt;INLINE_SYSCALL (bind......);
+		|-&gt;SYSCALL_DEFINE3(bind......);
+			/* 检测对应的描述符fd是否存在，不存在，返回-BADF
+			|-&gt;sockfd_lookup_light
+			|-&gt;sock-&gt;ops-&gt;bind(inet_stream_ops)
+				|-&gt;inet_bind
+					|-&gt;AF_INET兼容性检查
+					|-&gt;&lt;1024端口权限检查
+					/* bind端口号校验or选择(在bind为0的时候)
+					|-&gt;sk-&gt;sk_prot-&gt;get_port(inet_csk_get_port)</code></pre>
+<h2 id="inet-bind">inet_bind</h2>
+<p>inet_bind这个函数主要做了两个操作，一是检测是否允许bind，而是获取可用的端口号。这边值得注意的是。如果我们设置需要bind的端口号为0，那么Kernel会帮我们随机选择一个可用的端口号来进行bind！</p>
+<pre><code class="language-">// 让系统随机选择可用端口号
+sock_addr.sin_port = 0;
+call_err=bind(sockfd_server,(struct sockaddr*)(&amp;sock_addr),sizeof(sock_addr));
+</code></pre>
+<p>让我们看下inet_bind的流程</p>
+<p class="image-only"><img src="/blog/assets/source/image/bind/inet_bind.png" alt="codegen" loading="lazy"></p>
+<p>值得注意的是，由于对于&lt;1024的端口号需要CAP_NET_BIND_SERVICE,我们在监听80端口号(例如启动nginx时候),需要使用root用户或者赋予这个可执行文件CAP_NET_BIND_SERVICE权限。</p>
+<pre><code class="language-">use root 
+ or
+setcap cap_net_bind_service=+eip ./nginx </code></pre>
+<p>我们的bind允许绑定到0.0.0.0即INADDR_ANY这个地址上(一般都用这个)，它意味着内核去选择IP地址。对我们最直接的影响如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/bind/0000.png" alt="codegen" loading="lazy"></p>
+<p>然后，我们看下一个比较复杂的函数，即可用端口号的选择过程inet_csk_get_port (sk-&gt;sk_prot-&gt;get_port)</p>
+<h2 id="inet-csk-get-port">inet_csk_get_port</h2>
+<h3 id="%E7%AC%AC%E4%B8%80%E6%AE%B5-%E5%A6%82%E6%9E%9Cbind-port%E4%B8%BA0-%E9%9A%8F%E6%9C%BA%E6%90%9C%E7%B4%A2%E5%8F%AF%E7%94%A8%E7%AB%AF%E5%8F%A3%E5%8F%B7">第一段，如果bind port为0，随机搜索可用端口号</h3>
+<p>直接上源码，第一段代码为端口号为0的搜索过程</p>
+<pre><code class="language-">// 这边如果snum指定为0，则随机选择端口
+int inet_csk_get_port(struct sock *sk, unsigned short snum)
+{
+	......
+	// 这边net_random()采用prandom_u32,是伪(pseudo)随机数
+	smallest_rover = rover = net_random() % remaining + low;
+	smallest_size = -1;
+	// snum=0,随机选择端口的分支
+	if(!sum){
+		// 获取内核设置的端口号范围,对应内核参数/proc/sys/net/ipv4/ip_local_port_range 
+		inet_get_local_port_range(&amp;low,&amp;high);
+		......
+		do{
+			if(inet_is_reserved_local_port(rover)
+				goto next_nonlock; // 不选择保留端口号
+			......
+			inet_bind_bucket_for_each(tb, &amp;head-&gt;chain)
+				// 在同一个网络命名空间下存在和当前希望选择的port rover一样的port
+				if (net_eq(ib_net(tb), net) &amp;&amp; tb-&gt;port == rover) {
+					// 已经存在的sock和当前新sock都开启了SO_REUSEADDR,且当前sock状态不为listen
+					// 或者
+					// 已经存在的sock和当前新sock都开启了SO_REUSEPORT,而且两者都是同一个用户
+					if (((tb-&gt;fastreuse &gt; 0 &amp;&amp;
+					      sk-&gt;sk_reuse &amp;&amp;
+					      sk-&gt;sk_state != TCP_LISTEN) ||
+					     (tb-&gt;fastreuseport &gt; 0 &amp;&amp;
+					      sk-&gt;sk_reuseport &amp;&amp;
+					      uid_eq(tb-&gt;fastuid, uid))) &amp;&amp;
+					    (tb-&gt;num_owners &lt; smallest_size || smallest_size == -1)) {
+					   // 这边是选择一个最小的num_owners的port，即同时bind或者listen最小个数的port
+					   // 因为一个端口号(port)在开启了so_reuseaddr/so_reuseport之后，是可以多个进程同时使用的
+						smallest_size = tb-&gt;num_owners;
+						smallest_rover = rover;
+						if (atomic_read(&amp;hashinfo-&gt;bsockets) &gt; (high - low) + 1 &amp;&amp;
+						    !inet_csk(sk)-&gt;icsk_af_ops-&gt;bind_conflict(sk, tb, false)) {
+						    // 进入这个分支，表明可用端口号已经不够了，同时绑定当前端口号和之前已经使用此port的不冲突，则我们选择这个端口号(最小的)
+							snum = smallest_rover;
+							goto tb_found;
+						}
+					}
+					// 若端口号不冲突，则选择这个端口
+					if (!inet_csk(sk)-&gt;icsk_af_ops-&gt;bind_conflict(sk, tb, false)) {
+						snum = rover;
+						goto tb_found;
+					}
+					goto next;
+				}
+			break;
+			// 直至遍历完所有的可用port
+		} while (--remaining &gt; 0);
+	}
+	.......
+}</code></pre>
+<p>由于，我们在使用bind的时候很少随机端口号(在TCP服务器来说尤其如此),这段代码笔者就注释一下。一般只有一些特殊的远程过程调用(RPC)中会使用随机Server端随机端口号。</p>
+<h3 id="%E7%AC%AC%E4%BA%8C%E6%AE%B5-%E6%89%BE%E5%88%B0%E7%AB%AF%E5%8F%A3%E5%8F%B7%E6%88%96%E5%B7%B2%E7%BB%8F%E6%8C%87%E5%AE%9A">第二段，找到端口号或已经指定</h3>
+<pre><code class="language-">have_snum:
+	inet_bind_bucket_for_each(tb, &amp;head-&gt;chain)
+			if (net_eq(ib_net(tb), net) &amp;&amp; tb-&gt;port == snum)
+				goto tb_found;
+	}
+	tb = NULL;
+	goto tb_not_found
+tb_found:
+	// 如果此port已被bind
+	if (!hlist_empty(&amp;tb-&gt;owners)) {
+		// 如果设置为强制重用，则直接成功
+		if (sk-&gt;sk_reuse == SK_FORCE_REUSE)
+			goto success;
+	}
+	if (((tb-&gt;fastreuse &gt; 0 &amp;&amp;
+		      sk-&gt;sk_reuse &amp;&amp; sk-&gt;sk_state != TCP_LISTEN) ||
+		     (tb-&gt;fastreuseport &gt; 0 &amp;&amp;
+		      sk-&gt;sk_reuseport &amp;&amp; uid_eq(tb-&gt;fastuid, uid))) &amp;&amp;
+		    smallest_size == -1) {
+		    // 这个分支表明之前bind的port和当前sock都设置了reuse同时当前sock状态不为listen
+			// 或者同时设置了reuseport而且是同一个uid(注意，设置了reuseport后，可以同时listen同一个port了)
+			goto success;
+	} else {
+			ret = 1;
+			// 检查端口是否冲突
+			if (inet_csk(sk)-&gt;icsk_af_ops-&gt;bind_conflict(sk, tb, true)) {
+				if (((sk-&gt;sk_reuse &amp;&amp; sk-&gt;sk_state != TCP_LISTEN) ||
+				     (tb-&gt;fastreuseport &gt; 0 &amp;&amp;
+				      sk-&gt;sk_reuseport &amp;&amp; uid_eq(tb-&gt;fastuid, uid))) &amp;&amp;
+				    smallest_size != -1 &amp;&amp; --attempts &gt;= 0) {
+				    // 若冲突，但是设置了reuse非listen状态或者设置了reuseport且出在同一个用户下
+				    // 则可以进行重试
+					spin_unlock(&amp;head-&gt;lock);
+					goto again;
+				}
+
+				goto fail_unlock;
+			}
+			// 不冲突，走下面的逻辑
+		}
+tb_not_found:
+	if (!tb &amp;&amp; (tb = inet_bind_bucket_create(hashinfo-&gt;bind_bucket_cachep,
+					net, head, snum)) == NULL)
+			goto fail_unlock;
+	// 设置fastreuse
+	// 设置fastreuseport
+success:
+	......
+	// 将当前sock链入tb-&gt;owner，同时tb-&gt;num_owners++
+	inet_bind_hash(sk, tb, snum);
+	ret = 0;
+	// 返回bind(绑定)成功
+	return ret;</code></pre>
+<h2 id="%E5%88%A4%E6%96%AD%E7%AB%AF%E5%8F%A3%E5%8F%B7%E6%98%AF%E5%90%A6%E5%86%B2%E7%AA%81">判断端口号是否冲突</h2>
+<p>在上述源码中，判断端口号时否冲突的代码为</p>
+<pre><code class="language-">inet_csk(sk)-&gt;icsk_af_ops-&gt;bind_conflict 也即 inet_csk_bind_conflict
+int inet_csk_bind_conflict(const struct sock *sk,
+			   const struct inet_bind_bucket *tb, bool relax){
+	......
+	sk_for_each_bound(sk2, &amp;tb-&gt;owners) {
+			// 这边判断表明，必须同一个接口(dev_if)才进入下内部分支，也就是说不在同一个接口端口的不冲突
+			if (sk != sk2 &amp;&amp;
+		    !inet_v6_ipv6only(sk2) &amp;&amp;
+		    (!sk-&gt;sk_bound_dev_if ||
+		     !sk2-&gt;sk_bound_dev_if ||
+		     sk-&gt;sk_bound_dev_if == sk2-&gt;sk_bound_dev_if)) 
+		     {
+		     	if ((!reuse || !sk2-&gt;sk_reuse ||
+			    sk2-&gt;sk_state == TCP_LISTEN) &amp;&amp;
+			    (!reuseport || !sk2-&gt;sk_reuseport ||
+			    (sk2-&gt;sk_state != TCP_TIME_WAIT &amp;&amp;
+			     !uid_eq(uid, sock_i_uid(sk2))))) {
+			   // 在有一方没设置reuse且sock2状态为listen 同时
+			   // 有一方没设置reuseport且sock2状态不为time_wait同时两者的uid不一样的时候
+				const __be32 sk2_rcv_saddr = sk_rcv_saddr(sk2);
+				if (!sk2_rcv_saddr || !sk_rcv_saddr(sk) ||
+				 	 // ip地址一样，才算冲突
+				    sk2_rcv_saddr == sk_rcv_saddr(sk))
+					break;
+			}
+			// 非放松模式，ip地址一样，才算冲突
+			......
+		  	return sk2 != NULL;
+	}
+	......
+}</code></pre>
+<p>上面代码的逻辑如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/bind/conflict_judge.png" alt="codegen" loading="lazy"></p>
+<h2 id="so-reuseaddr%E5%92%8Cso-reuseport">SO_REUSEADDR和SO_REUSEPORT</h2>
+<p>上面的代码有点绕，笔者就讲一下，对于我们日常开发要关心什么。 我们在上面的bind里面经常见到sk_reuse和sk_reuseport这两个socket的Flag。这两个Flag能够决定是否能够bind(绑定)成功。这两个Flag的设置在C语言里面如下代码所示:</p>
+<pre><code class="language-"> setsockopt(sockfd_server, SOL_SOCKET, SO_REUSEADDR, &amp;(int){ 1 }, sizeof(int));
+ setsockopt(sockfd_server, SOL_SOCKET, SO_REUSEPORT, &amp;(int){ 1 }, sizeof(int));</code></pre>
+<p>在原生JAVA中</p>
+<pre><code class="language-"> // java8中，原生的socket并不支持so_reuseport
+ ServerSocket server = new ServerSocket(port);
+ server.setReuseAddress(true);</code></pre>
+<p>在Netty(Netty版本 &gt;= 4.0.16且Linux内核版本&gt;=3.9以上)中,可以使用SO_REUSEPORT。</p>
+<h2 id="so-reuseaddr">SO_REUSEADDR</h2>
+<p>在之前的源码里面，我们看到判断bind是否冲突的时候，有这么一个分支</p>
+<pre><code class="language-">(!reuse || !sk2-&gt;sk_reuse ||
+			    sk2-&gt;sk_state == TCP_LISTEN) /* 暂忽略reuseport */){
+	// 即有一方没有设置
+}</code></pre>
+<p>如果sk2(即已bind的socket)是TCP_LISTEN状态或者，sk2和新sk两者都没有设置_REUSEADDR的时候，可以判断为冲突。</p>
+<p>我们可以得出，如果原sock和新sock都设置了SO_REUSEADDR的时候，只要原sock不是Listen状态，都可以绑定成功，甚至ESTABLISHED状态也可以!</p>
+<p class="image-only"><img src="/blog/assets/source/image/bind/still_bind_okay.png" alt="codegen" loading="lazy"></p>
+<p>这个在我们平常工作中，最常见的就是原sock处于TIME_WAIT状态，这通常在我们关闭Server的时候出现，如果不设置SO_REUSEADDR,则会绑定失败，进而启动不来服务。而设置了SO_REUSEADDR,由于不是TCP_LISTEN,所以可以成功。</p>
+<p class="image-only"><img src="/blog/assets/source/image/bind/restart_server_okay.png" alt="codegen" loading="lazy"></p>
+<p>这个特性在紧急重启以及线下调试的非常有用，建议开启。</p>
+<h2 id="so-reuseport">SO_REUSEPORT</h2>
+<p>SO_REUSEPORT是Linux在3.9版本引入的新功能。</p>
+<pre><code class="language-">1.在海量高并发连接的创建时候，由于正常的模型是单线程listener分发，无法利用多核优势，这就会成为瓶颈。
+2.CPU缓存行丢失</code></pre>
+<p>我们看下一般的Reactor线程模型，</p>
+<p class="image-only"><img src="/blog/assets/source/image/epoll_ready/epoll_reactor.png" alt="codegen" loading="lazy"></p>
+<p>明显的其单线程listen/accept会存在瓶颈(如果采用多线程epoll accept，则会惊群，加WQ_FLAG_EXCLUSIVE可以解决一部分)，尤其是在采用短链接的情况下。 鉴于此,Linux增加了SO_REUSEPORT,而之前bind中判断是否冲突的下面代码也是为这个参数而添加的逻辑:</p>
+<pre><code class="language-">
+if(!reuseport || !sk2-&gt;sk_reuseport ||
+			    (sk2-&gt;sk_state != TCP_TIME_WAIT &amp;&amp;
+			     !uid_eq(uid, sock_i_uid(sk2))</code></pre>
+<p>这段代码让我们在多次bind的时候，如果设置了SO_REUSEPORT的时候不会报错，也就是让我们有个多线程(进程)bind/listen的能力。如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/bind/multi_cpu_accept.png" alt="codegen" loading="lazy"></p>
+<p>而开启了SO_REUSEPORT后，代码栈如下:</p>
+<pre><code class="language-">tcp_v4_rcv
+	|-&gt;__inet_lookup_skb 
+		|-&gt;__inet_lookup
+			|-&gt;__inet_lookup_listener
+ /* 用打分和伪随机数等挑选出一个listen的sock */
+struct sock *__inet_lookup_listener(......)
+{
+	......
+	if (score &gt; hiscore) {
+			result = sk;
+			hiscore = score;
+			reuseport = sk-&gt;sk_reuseport;
+			if (reuseport) {
+				phash = inet_ehashfn(net, daddr, hnum,
+						     saddr, sport);
+				matches = 1;
+			}
+		} else if (score == hiscore &amp;&amp; reuseport) {
+			matches++;
+			if (((u64)phash * matches) &gt;&gt; 32 == 0)
+				result = sk;
+			phash = next_pseudo_random32(phash);
+		}
+	......
+}</code></pre>
+<p>直接在内核层面做负载均衡，将accept的任务分散到不同的线程的不同socket上(Sharding)，毫无疑问可以多核能力，大幅提升连接成功后的socket分发能力。</p>
+<h2 id="nginx%E5%B7%B2%E7%BB%8F%E9%87%87%E7%94%A8so-reuseport">Nginx已经采用SO_REUSEPORT</h2>
+<p>Nginx在1.9.1版本的时候引入了SO_REUSEPORT，配置如下:</p>
+<pre><code class="language-">http {
+     server {
+          listen 80 reuseport;
+          server_name  localhost;
+          # ...
+     }
+}
+
+stream {
+     server {
+          listen 12345 reuseport;
+          # ...
+     }
+}</code></pre>
+<p class="image-only"><img src="/blog/assets/source/image/bind/nginx_3.png" alt="codegen" loading="lazy"></p>
+<p class="image-only"><img src="/blog/assets/source/image/bind/nginx_stdev.png" alt="codegen" loading="lazy"></p>
+<p>在压测场景下，性能提升了3倍！详情见下面链接。</p>
+<pre><code class="language-">https://www.nginx.com/blog/socket-sharding-nginx-release-1-9-1/</code></pre>
+<h2 id="%E6%80%BB%E7%BB%93">总结</h2>
+<p>Linux内核源码博大精深，一个看起来简单的bind系统调用竟然牵涉这么多，在里面可以挖掘出各种细节。在此分享出来，希望对读者有所帮助。</p></div>
+    <nav class="prev-next"><a href="/blog/articles/linux-socket-tcp-accept-e8523e42.html"><small>上一篇</small><span>从Linux源码看Socket(TCP)的accept</span></a><a href="/blog/articles/linux-socket-tcp-listen-d1e99aff.html"><small>下一篇</small><span>从Linux源码看Socket(TCP)的listen及连接队列</span></a></nav>
+  </article>
+  <aside class="article-related">
+    <h2>同类文章</h2><a href="/blog/articles/linux-socket-tcp-listen-d1e99aff.html">从Linux源码看Socket(TCP)的listen及连接队列</a>
+<a href="/blog/articles/tcp-syncookie-0db101f6.html">tcp_syncookie的坑</a>
+<a href="/blog/articles/linux-tcp-304f12e7.html">Linux上TCP的几个内核参数调优</a>
+<a href="/blog/articles/linux-socket-tcp-accept-e8523e42.html">从Linux源码看Socket(TCP)的accept</a>
+<a href="/blog/articles/linux-time-wait-4a2c9b4c.html">从Linux源码看TIME_WAIT状态的持续时间</a>
+<a href="/blog/articles/linux-socket-close-d72a4843.html">从linux源码看socket的close</a>
+<a href="/blog/articles/socket-d81c1e8d.html">网络编程里的socket</a>
+<a href="/blog/articles/linux-socket-tcp-timeout-b3547af3.html">从linux源码看socket(tcp)的timeout</a>
+<a href="/blog/articles/linux-epoll-8d1f5086.html">从linux源码看epoll</a>
+  </aside>
+</main>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, securityLevel: "loose" });
+</script>
+</body>
+</html>

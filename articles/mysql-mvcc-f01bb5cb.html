@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="作为一个数据库爱好者，自己动手写过简单的SQL解析器以及存储引擎，但感觉还是不够过瘾。&lt;&lt;事务处理-概念与技术诚然讲的非常透彻，但只能提纲挈领，不能让你玩转某个真正的数据库。感谢cmake,能够让我在mac上用xcode去debug MySQL,从而能去领略它的各种实现细节。">
+  <title>MySQL多版本并发控制机制(MVCC)-源码浅析 - 苍天环绕的小世界</title>
+  <link rel="stylesheet" href="/blog/assets/site.css?v=20261007-contact-page">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="/blog/">苍天环绕的小世界</a>
+  <nav><a href="/blog/">首页</a><a class="nav-featured" href="/blog/featured.html">精品阅读</a><a href="/blog/#articles">文章</a><a href="/blog/contact.html">联系我</a></nav>
+</header>
+<main class="article-layout">
+  <aside class="article-aside">
+    <a class="back-link" href="/blog/">返回首页</a>
+    <div class="toc"><h2>目录</h2><a class="toc-level-1" href="#mysql%E5%A4%9A%E7%89%88%E6%9C%AC%E5%B9%B6%E5%8F%91%E6%8E%A7%E5%88%B6%E6%9C%BA%E5%88%B6-mvcc-%E6%BA%90%E7%A0%81%E6%B5%85%E6%9E%90">MySQL多版本并发控制机制(MVCC)-源码浅析</a>
+<a class="toc-level-1" href="#%E5%89%8D%E8%A8%80">前言</a>
+<a class="toc-level-1" href="#mvcc-%E5%A4%9A%E7%89%88%E6%9C%AC%E5%B9%B6%E5%8F%91%E6%8E%A7%E5%88%B6%E6%9C%BA%E5%88%B6">MVCC(多版本并发控制机制)</a>
+<a class="toc-level-2" href="#repeatable-read">Repeatable Read</a>
+<a class="toc-level-2" href="#read-commit">Read Commit</a>
+<a class="toc-level-2" href="#mvcc%E7%9A%84%E4%BC%98%E5%8A%BF">MVCC的优势</a>
+<a class="toc-level-1" href="#mvcc-%E5%AE%9E%E7%8E%B0%E6%9C%BA%E5%88%B6">MVCC(实现机制)</a>
+<a class="toc-level-2" href="#select%E8%BF%90%E8%A1%8C%E6%A0%88">select运行栈</a>
+<a class="toc-level-2" href="#read-view%E7%9A%84%E5%88%9B%E5%BB%BA%E8%BF%87%E7%A8%8B">read_view的创建过程</a>
+<a class="toc-level-2" href="#%E8%A1%8C%E7%89%88%E6%9C%AC%E5%8F%AF%E8%A7%81%E6%80%A7">行版本可见性:</a>
+<a class="toc-level-2" href="#undolog%E6%90%9C%E7%B4%A2%E5%8F%AF%E8%A7%81%E7%89%88%E6%9C%AC%E7%9A%84%E8%BF%87%E7%A8%8B">undolog搜索可见版本的过程</a>
+<a class="toc-level-2" href="#read-view%E5%88%9B%E5%BB%BA%E6%97%B6%E6%9C%BA%E5%86%8D%E8%AE%A8%E8%AE%BA">read_view创建时机再讨论</a>
+<a class="toc-level-1" href="#mvcc%E5%92%8C%E9%94%81%E7%9A%84%E5%90%8C%E6%97%B6%E4%BD%9C%E7%94%A8%E5%AF%BC%E8%87%B4%E7%9A%84%E4%B8%80%E4%BA%9B%E7%8E%B0%E8%B1%A1">MVCC和锁的同时作用导致的一些现象</a>
+<a class="toc-level-1" href="#%E6%80%BB%E7%BB%93">总结</a></div>
+  </aside>
+  <article class="article">
+    <header class="article-title">
+      <div class="meta"><span>MySQL</span><time>2018.08.14</time><span>5 min read</span></div>
+      <h1>MySQL多版本并发控制机制(MVCC)-源码浅析</h1>
+      <p>作为一个数据库爱好者，自己动手写过简单的SQL解析器以及存储引擎，但感觉还是不够过瘾。&lt;&lt;事务处理-概念与技术诚然讲的非常透彻，但只能提纲挈领，不能让你玩转某个真正的数据库。感谢cmake,能够让我在mac上用xcode去debug MySQL,从而能去领略它的各种实现细节。</p>
+    </header>
+    <div class="prose"><h1 id="mysql%E5%A4%9A%E7%89%88%E6%9C%AC%E5%B9%B6%E5%8F%91%E6%8E%A7%E5%88%B6%E6%9C%BA%E5%88%B6-mvcc-%E6%BA%90%E7%A0%81%E6%B5%85%E6%9E%90">MySQL多版本并发控制机制(MVCC)-源码浅析</h1>
+<h1 id="%E5%89%8D%E8%A8%80">前言</h1>
+<p>作为一个数据库爱好者，自己动手写过简单的SQL解析器以及存储引擎，但感觉还是不够过瘾。&lt;&lt;事务处理-概念与技术&gt;&gt;诚然讲的非常透彻，但只能提纲挈领，不能让你玩转某个真正的数据库。感谢cmake,能够让我在mac上用xcode去debug MySQL,从而能去领略它的各种实现细节。 笔者一直对数据库的隔离性很好奇，此篇博客就是我debug MySQL过程中的偶有所得。 (注:本文的MySQL采用的是MySQL-5.6.35版本)</p>
+<h1 id="mvcc-%E5%A4%9A%E7%89%88%E6%9C%AC%E5%B9%B6%E5%8F%91%E6%8E%A7%E5%88%B6%E6%9C%BA%E5%88%B6">MVCC(多版本并发控制机制)</h1>
+<p>隔离性也可以被称作并发控制、可串行化等。谈到并发控制首先想到的就是锁，MySQL通过使用两阶段锁的方式实现了更新的可串行化，同时为了加速查询性能，采用了MVCC(Multi Version Concurrency Control)的机制，使得不用锁也可以获取一致性的版本。</p>
+<h2 id="repeatable-read">Repeatable Read</h2>
+<p>MySQL的通过MVCC以及(Next-Key Lock)实现了可重复读(Repeatable Read),其思想(MVCC)就是记录数据的版本变迁，通过精巧的选择不同数据的版本从而能够对用户呈现一致的结果。如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/mycat/repeatabe/repeatable/repeatable.png" alt="repeatable_read" loading="lazy"></p>
+<p>上图中，(A=50|B=50)的初始版本为1。 1.事务t1在select A时候看到的版本为1，即A=50 2.事务t2对A和B的修改将版本升级为2,即A=0,B=100 3.事务t1再此select B的时候看到的版本还是1, 即B=50 这样就隔离了版本的影响，A+B始终为100。</p>
+<h2 id="read-commit">Read Commit</h2>
+<p>而如果不通过版本控制机制，而是读到最近提交的结果的话，则隔离级别是read commit,如下图所示，则隔离级别是read commit,如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/mycat/repeatabe/repeatable/readCommit.png" alt="read_commit" loading="lazy"></p>
+<p>在这种情况下，就需要使用锁机制(例如select for update)将此A,B记录锁住，从而获得正确的一致结果,如下图所示：</p>
+<p class="image-only"><img src="/blog/assets/source/image/mycat/repeatabe/readCommitForUpdate.png" alt="lock" loading="lazy"></p>
+<h2 id="mvcc%E7%9A%84%E4%BC%98%E5%8A%BF">MVCC的优势</h2>
+<p>当我们要对一些数据做一些只读操作来检查一致性，例如检查账务是否对齐的操作时候，并不希望加上对性能损耗很大的锁。这时候MVCC的一致性版本就有很大的优势了。</p>
+<h1 id="mvcc-%E5%AE%9E%E7%8E%B0%E6%9C%BA%E5%88%B6">MVCC(实现机制)</h1>
+<p>本节就开始谈谈MVCC的实现机制,注意MVCC仅仅在纯select时有效(不包括select for update,lock in share mode等加锁操作,以及update\insert等)。</p>
+<h2 id="select%E8%BF%90%E8%A1%8C%E6%A0%88">select运行栈</h2>
+<p>首先我们追踪一下一条普通的查询sql在mysql源码中的运行过程,sql为(select * from test);</p>
+<p class="image-only"><img src="/blog/assets/source/image/mvcc/sql_select_example.png" alt="mvcc" loading="lazy"></p>
+<p>其运行栈为:</p>
+<pre><code class="language-">handle_one_connection  MySQL的网络模型是one request one thread
+ |-do_handle_one_connection
+	|-do_command
+		|-dispatch_command
+			|-mysql_parse	解析SQL
+				|-mysql_execute_command
+					|-execute_sqlcom_select	执行select语句
+						|-handle_select
+							...一堆parse join 等的操作，当前并不关心
+							|-*tab-&gt;read_record.read_record 读取记录</code></pre>
+<p>由于mysql默认隔离级别是repeatable_read(RR),所以read_record重载为 rr_sequential(当前我们并不关心select通过index扫描出row之后再通过condition过滤的过程)。继续追踪:</p>
+<pre><code class="language-">read_record
+ |-rr_sequential
+	|-ha_rnd_next
+		|-ha_innobase::rnd_next 这边就已经到了innodb引擎了
+			|-general_fetch
+				|-row_search_for_mysql
+					|-lock_clust_rec_cons_read_sees 这边就是判断并选择版本的地方</code></pre>
+<p>让我们看下该函数内部:</p>
+<pre><code class="language-">bool lock_clust_rec_cons_read_sees(const rec_t* rec /*由innodb扫描出来的一行*/,....){
+	...
+	// 从当前扫描的行中获取其最后修改的版本trx_id(事务id)
+	trx_id = row_get_rec_trx_id(rec, index, offsets);
+	// 通过参数(一致性快照视图和事务id)决定看到的行快照
+	return(read_view_sees_trx_id(view, trx_id));
+}</code></pre>
+<h2 id="read-view%E7%9A%84%E5%88%9B%E5%BB%BA%E8%BF%87%E7%A8%8B">read_view的创建过程</h2>
+<p>我们先关注一致性视图的创建过程,我们先看下read_view结构:</p>
+<pre><code class="language-">struct read_view_t{
+	// 由于是逆序排列，所以low/up有所颠倒
+	// 能看到当前行版本的高水位标识,&gt; low_limit_id皆不能看见
+	trx_id_t	low_limit_id;
+	// 能看到当前行版本的低水位标识,&lt; up_limit_id皆能看见
+	trx_id_t	up_limit_id;
+	// 当前活跃事务(即未提交的事务)的数量
+	ulint		n_trx_ids;
+	// 以逆序排列的当前获取活跃事务id的数组
+	// 其up_limit_id&lt;tx_id&lt;low_limit_id
+	trx_id_t*	trx_ids;	
+	// 创建当前视图的事务id
+	trx_id_t	creator_trx_id;
+	// 事务系统中的一致性视图链表
+	UT_LIST_NODE_T(read_view_t) view_list;
+};</code></pre>
+<p>然后通过debug，发现创建read_view结构也是在上述的rr_sequential中操作的，继续跟踪调用栈:</p>
+<pre><code class="language-">rr_sequential
+ |-ha_rnd_next
+ 	|-rnd_next
+ 		|-index_first 在start_of_scan为true时候走当前分支index_first
+ 			|-index_read
+ 				|-row_search_for_mysql
+ 					|-trx_assign_read_view</code></pre>
+<p>我们看下row_search_for_mysql里的一个分支:</p>
+<pre><code class="language-">row_search_for_mysql:
+// 这边只有select不加锁模式的时候才会创建一致性视图
+else if (prebuilt-&gt;select_lock_type == LOCK_NONE) {		// 创建一致性视图
+		trx_assign_read_view(trx);
+		prebuilt-&gt;sql_stat_start = FALSE;
+}</code></pre>
+<p>上面的注释就是select for update(in share model)不会走MVCC的原因。让我们进一步分析trx_assign_read_view函数:</p>
+<pre><code class="language-">trx_assign_read_view
+ |-read_view_open_now
+ 	|-read_view_open_now_low</code></pre>
+<p>好了，终于到了创建read_view的主要阶段,主要过程如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/mvcc/trx_read_view.png" alt="mvcc" loading="lazy"></p>
+<p>代码过程为:</p>
+<pre><code class="language-">static read_view_t* read_view_open_now_low(trx_id_t	cr_trx_id,mem_heap_t*	heap)
+{
+	read_view_t*	view;
+	// 当前事务系统中最大的事务id设置为low_limit_no
+	view-&gt;low_limit_no = trx_sys-&gt;max_trx_id;
+	view-&gt;low_limit_id = view-&gt;low_limit_no;
+	// CreateView构造函数，会将非当前事务和已经在内存中提交的事务给剔除，即判断条件为
+	// trx-&gt;id != m_view-&gt;creator_trx_id&amp;&amp; !trx_state_eq(trx, TRX_STATE_COMMITTED_IN_MEMORY)的
+	// 才加入当前视图列表
+	ut_list_map(trx_sys-&gt;rw_trx_list, &amp;trx_t::trx_list, CreateView(view));
+	if (view-&gt;n_trx_ids &gt; 0) {
+		// 将当前事务系统中的最小id设置为up_limit_id,因为是逆序排列
+		view-&gt;up_limit_id = view-&gt;trx_ids[view-&gt;n_trx_ids - 1];
+	} else {
+		// 如果当前没有非当前事务之外的活跃事务，则设置为low_limit_id
+		view-&gt;up_limit_id = view-&gt;low_limit_id;
+	}
+	// 忽略purge事务，purge时，当前事务id是0
+	if (cr_trx_id &gt; 0) {
+		read_view_add(view);
+	}
+	// 返回一致性视图
+	return(view);
+}</code></pre>
+<h2 id="%E8%A1%8C%E7%89%88%E6%9C%AC%E5%8F%AF%E8%A7%81%E6%80%A7">行版本可见性:</h2>
+<p>由上面的lock_clust_rec_cons_read_sees可知,行版本可见性由read_view_sees_trx_id函数判断:</p>
+<pre><code class="language-">/*********************************************************************//**
+Checks if a read view sees the specified transaction.
+@return	true if sees */
+UNIV_INLINE
+bool
+read_view_sees_trx_id(
+/*==================*/
+	const read_view_t*	view,	/*!&lt; in: read view */
+	trx_id_t		trx_id)	/*!&lt; in: trx id */
+{
+	if (trx_id &lt; view-&gt;up_limit_id) {
+
+		return(true);
+	} else if (trx_id &gt;= view-&gt;low_limit_id) {
+
+		return(false);
+	} else {
+		ulint	lower = 0;
+		ulint	upper = view-&gt;n_trx_ids - 1;
+
+		ut_a(view-&gt;n_trx_ids &gt; 0);
+
+		do {
+			ulint		mid	= (lower + upper) &gt;&gt; 1;
+			trx_id_t	mid_id	= view-&gt;trx_ids[mid];
+
+			if (mid_id == trx_id) {
+				return(FALSE);
+			} else if (mid_id &lt; trx_id) {
+				if (mid &gt; 0) {
+					upper = mid - 1;
+				} else {
+					break;
+				}
+			} else {
+				lower = mid + 1;
+			}
+		} while (lower &lt;= upper);
+	}
+
+	return(true);
+}</code></pre>
+<p>其实上述函数就是一个二分法，read_view其实保存的是当前活跃事务的所有事务id,如果当前行版本对应修改的事务id不在当前活跃事务里面的话，就返回true,表示当前版本可见，否则就是不可见,如下图所示。</p>
+<p class="image-only"><img src="/blog/assets/source/image/mvcc/trx_visible.png" alt="mvcc" loading="lazy"></p>
+<p>接上述lock_clust_rec_cons_read_sees的返回:</p>
+<pre><code class="language-">if (UNIV_LIKELY(srv_force_recovery &lt; 5)
+			    &amp;&amp; !lock_clust_rec_cons_read_sees(
+				    rec, index, offsets, trx-&gt;read_view)){
+	// 当前处理的是当前版本不可见的情况
+	// 通过undolog来返回到一致的可见版本
+	err = row_sel_build_prev_vers_for_mysql(
+					trx-&gt;read_view, clust_index,
+					prebuilt, rec, &amp;offsets, &amp;heap,
+					&amp;old_vers, &amp;mtr);			    
+} else{
+	// 可见，然后返回
+}</code></pre>
+<h2 id="undolog%E6%90%9C%E7%B4%A2%E5%8F%AF%E8%A7%81%E7%89%88%E6%9C%AC%E7%9A%84%E8%BF%87%E7%A8%8B">undolog搜索可见版本的过程</h2>
+<p>我们现在考察一下row_sel_build_prev_vers_for_mysql函数:</p>
+<pre><code class="language-">row_sel_build_prev_vers_for_mysql
+ |-row_vers_build_for_consistent_read</code></pre>
+<p>主要是调用了row_ver_build_for_consistent_read方法返回可见版本:</p>
+<pre><code class="language-">dberr_t row_vers_build_for_consistent_read(...)
+{
+	......
+	for(;;){
+		err = trx_undo_prev_version_build(rec, mtr,version,index,*offsets, heap,&amp;prev_version);
+		......
+		trx_id = row_get_rec_trx_id(prev_version, index, *offsets);
+		// 如果当前row版本符合一致性视图，则返回
+		if (read_view_sees_trx_id(view, trx_id)) {
+			......
+			break;
+		}
+		// 如果当前row版本不符合，则继续回溯上一个版本(回到for循环的地方)
+		version = prev_version;
+	}
+	......
+}</code></pre>
+<p>整个过程如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/mvcc/undo_log_see.png" alt="mvcc" loading="lazy"></p>
+<p>至于undolog怎么恢复出对应版本的row记录就又是一个复杂的过程了，由于篇幅原因，就略过不表。</p>
+<h2 id="read-view%E5%88%9B%E5%BB%BA%E6%97%B6%E6%9C%BA%E5%86%8D%E8%AE%A8%E8%AE%BA">read_view创建时机再讨论</h2>
+<p>在创建一致性视图的row_search_for_mysql的代码中</p>
+<pre><code class="language-">// 只有非锁模式的select才创建一致性视图
+else if (prebuilt-&gt;select_lock_type == LOCK_NONE) {		// 创建一致性视图
+		trx_assign_read_view(trx);
+		prebuilt-&gt;sql_stat_start = FALSE;
+}</code></pre>
+<p>trx_assign_read_view中由这么一段代码</p>
+<pre><code class="language-">一致性视图在一个事务只创建一次
+if (!trx-&gt;read_view) {
+		trx-&gt;read_view = read_view_open_now(
+			trx-&gt;id, trx-&gt;global_read_view_heap);
+		trx-&gt;global_read_view = trx-&gt;read_view;
+	}
+</code></pre>
+<p>所以综合这两段代码，即在一个事务中，只有第一次运行select的时候才会创建一致性视图,如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/mvcc/create_view_timing.png" alt="mvcc" loading="lazy"></p>
+<p>笔者构造了此种场景模拟过，确实如此。</p>
+<h1 id="mvcc%E5%92%8C%E9%94%81%E7%9A%84%E5%90%8C%E6%97%B6%E4%BD%9C%E7%94%A8%E5%AF%BC%E8%87%B4%E7%9A%84%E4%B8%80%E4%BA%9B%E7%8E%B0%E8%B1%A1">MVCC和锁的同时作用导致的一些现象</h1>
+<p>MySQL是通过MVCC和二阶段锁(2PL)来兼顾性能和一致性的，但是由于MySQL仅仅在select时候才创建一致性视图，而在update等加锁操作的时候并不做如此操作，所以就会产生一些诡异的现象。如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/mvcc/not_strict_rr.png" alt="mvcc" loading="lazy"></p>
+<p>如果理解了update不走一致性视图，而select走一致性视图，就可以很好解释这个现象。 如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/mvcc/not_strict_rr_reason.png" alt="mvcc" loading="lazy"></p>
+<h1 id="%E6%80%BB%E7%BB%93">总结</h1>
+<p>MySQL为了兼顾性能和ACID使用了大量复杂的机制，2PL(两阶段锁)和MVCC就是其实现的典型。幸好可以通过xcode等IDE进行方便的debug，这样就可以非常精确加迅速的追踪其各种机制的实现。希望这篇文章能够帮助到喜欢研究MySQL源码的读者们。</p></div>
+    <nav class="prev-next"><a href="/blog/articles/mysql-seconds-behind-master-fceee9b1.html"><small>上一篇</small><span>MySQL-Seconds_behind_master的精度误差</span></a><a href="/blog/articles/mysql-binlog-61d26458.html"><small>下一篇</small><span>MySql-Binlog协议详解-报文篇</span></a></nav>
+  </article>
+  <aside class="article-related">
+    <h2>同类文章</h2><a href="/blog/articles/mysql-seconds-behind-master-fceee9b1.html">MySQL-Seconds_behind_master的精度误差</a>
+<a href="/blog/articles/mysql-io-b7cf67b1.html">从MySQL源码看其网络IO模型</a>
+<a href="/blog/articles/mysql-6961acfc.html">MySql-两阶段加锁协议</a>
+<a href="/blog/articles/mysql-proxy-04bb965a.html">MySql-Proxy之多路结果集归并</a>
+<a href="/blog/articles/mysql-binlog-61d26458.html">MySql-Binlog协议详解-报文篇</a>
+<a href="/blog/articles/mysql-binlog-c2503567.html">MySql-Binlog协议详解-流程篇</a>
+<a href="/blog/articles/mysql-8938d3bc.html">MySql协议讲解-事务协议</a>
+<a href="/blog/articles/mysql-crud-result-4b7dbe60.html">MySql协议详解-CRUD与Result篇</a>
+<a href="/blog/articles/mysql-handshake-fdfe17a7.html">MySql协议详解-HandShake握手篇</a>
+  </aside>
+</main>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, securityLevel: "loose" });
+</script>
+</body>
+</html>

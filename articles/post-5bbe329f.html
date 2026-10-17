@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="紧接上篇&lt;&lt;高可用之路-闲聊监控指标的局限。上篇说到，指标只是事实的投影，由于代价的存在它无法无限的逼近真实。因此，指标自身的局限有时不仅无法帮助我们发现问题，反而可能迷惑甚至误导我们。本文将详细讨论指标局限最常见的一种表现——指标失明，即问题已经发生，指标却无法有效反映。">
+  <title>高可用之路·观测篇-指标失明 - 苍天环绕的小世界</title>
+  <link rel="stylesheet" href="/blog/assets/site.css?v=20261007-contact-page">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="/blog/">苍天环绕的小世界</a>
+  <nav><a href="/blog/">首页</a><a class="nav-featured" href="/blog/featured.html">精品阅读</a><a href="/blog/#articles">文章</a><a href="/blog/contact.html">联系我</a></nav>
+</header>
+<main class="article-layout">
+  <aside class="article-aside">
+    <a class="back-link" href="/blog/">返回首页</a>
+    <div class="toc"><h2>目录</h2><a class="toc-level-1" href="#%E9%AB%98%E5%8F%AF%E7%94%A8%E4%B9%8B%E8%B7%AF-%E8%A7%82%E6%B5%8B%E7%AF%87-%E6%8C%87%E6%A0%87%E5%A4%B1%E6%98%8E">高可用之路·观测篇-指标失明</a>
+<a class="toc-level-1" href="#%E5%89%8D%E8%A8%80">前言</a>
+<a class="toc-level-1" href="#1-%E9%97%AE%E9%A2%98%E5%8E%8B%E6%A0%B9%E6%B2%A1%E6%9C%89%E6%8C%87%E6%A0%87%E5%8F%8D%E6%98%A0">1. 问题压根没有指标反映</a>
+<a class="toc-level-2" href="#1-1-%E5%BA%94%E5%AF%B9%E6%96%B9%E6%A1%88">1.1 应对方案</a>
+<a class="toc-level-1" href="#2-%E9%97%AE%E9%A2%98%E6%9C%89%E6%8C%87%E6%A0%87%E5%8F%8D%E6%98%A0-%E4%BD%86%E6%8C%87%E6%A0%87%E7%9C%8B%E4%B8%8D%E5%85%A8">2. 问题有指标反映，但指标看不全</a>
+<a class="toc-level-2" href="#2-1-%E6%95%B4%E4%BD%93%E7%9C%8B%E4%B8%8D%E8%A7%81%E5%B1%80%E9%83%A8">2.1 整体看不见局部</a>
+<a class="toc-level-3" href="#2-1-1-%E6%8D%9F%E5%A4%B1%E6%97%B6%E9%97%B4%E4%B8%8A%E7%9A%84%E5%88%86%E5%B8%83">2.1.1 损失时间上的分布</a>
+<a class="toc-level-3" href="#2-1-2-%E6%8D%9F%E5%A4%B1%E7%A9%BA%E9%97%B4%E4%B8%8A%E7%9A%84%E5%88%86%E5%B8%83">2.1.2 损失空间上的分布</a>
+<a class="toc-level-3" href="#2-1-2-1-%E5%A6%82%E4%BD%95%E5%BA%94%E5%AF%B9">2.1.2.1 如何应对</a>
+<a class="toc-level-2" href="#2-2-%E5%B1%80%E9%83%A8%E7%9C%8B%E4%B8%8D%E8%A7%81%E6%95%B4%E4%BD%93">2.2 局部看不见整体</a>
+<a class="toc-level-3" href="#2-2-1-%E5%AE%B9%E5%99%A8cpu%E6%97%A0%E6%B3%95%E5%8F%8D%E6%98%A0%E7%9C%9F%E5%AE%9E%E8%B4%9F%E8%BD%BD">2.2.1 容器CPU无法反映真实负载</a>
+<a class="toc-level-3" href="#2-2-2-%E5%AE%B9%E5%99%A8%E5%86%85%E5%AD%98%E4%BD%BF%E7%94%A8%E7%8E%87%E6%AD%A3%E5%B8%B8%E4%BD%86%E5%AE%9E%E9%99%85%E8%B7%A8numa%E8%AE%BF%E9%97%AE">2.2.2 容器内存使用率正常但实际跨NUMA访问</a>
+<a class="toc-level-3" href="#2-2-3-%E5%BA%94%E5%AF%B9%E6%96%B9%E6%A1%88">2.2.3 应对方案</a>
+<a class="toc-level-1" href="#3-%E6%80%BB%E7%BB%93">3 总结</a></div>
+  </aside>
+  <article class="article">
+    <header class="article-title">
+      <div class="meta"><span>高可用之路</span><time>2026.07.25</time><span>6 min read</span></div>
+      <h1>高可用之路·观测篇-指标失明</h1>
+      <p>紧接上篇&lt;&lt;高可用之路-闲聊监控指标的局限。上篇说到，指标只是事实的投影，由于代价的存在它无法无限的逼近真实。因此，指标自身的局限有时不仅无法帮助我们发现问题，反而可能迷惑甚至误导我们。本文将详细讨论指标局限最常见的一种表现——指标失明，即问题已经发生，指标却无法有效反映。</p>
+    </header>
+    <div class="prose"><h1 id="%E9%AB%98%E5%8F%AF%E7%94%A8%E4%B9%8B%E8%B7%AF-%E8%A7%82%E6%B5%8B%E7%AF%87-%E6%8C%87%E6%A0%87%E5%A4%B1%E6%98%8E">高可用之路·观测篇-指标失明</h1>
+<h1 id="%E5%89%8D%E8%A8%80">前言</h1>
+<p>紧接上篇&lt;&lt;高可用之路-闲聊监控指标的局限&gt;&gt;。上篇说到，指标只是事实的投影，由于代价的存在它无法无限的逼近真实。因此，指标自身的局限有时不仅无法帮助我们发现问题，反而可能迷惑甚至误导我们。本文将详细讨论指标局限最常见的一种表现——指标失明，即问题已经发生，指标却无法有效反映。</p>
+<h1 id="1-%E9%97%AE%E9%A2%98%E5%8E%8B%E6%A0%B9%E6%B2%A1%E6%9C%89%E6%8C%87%E6%A0%87%E5%8F%8D%E6%98%A0">1. 问题压根没有指标反映</h1>
+<p>最常见的情形是我们根本没有一个指标去反映相关的问题。这个在日常往往表现为漏配监控。举一个很常见的例子，如果我们只监控Http返回码为500的报错，而认为Http返回码是200都正常的话，其实很有可能出了问题而不自知。因为Http返回码是500还是200在大部分情况下只能反映Server内部处理有没有异常，但并无法反映业务上的问题。例如库存不够了，往往给用户返回是Http200返回码，但用户Get到的信息却是库存不足。如果没有对这个业务返回码做相应的监控，那么我们无法观测到由于库存不够导致的持续订单损失。   如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/remote/blog-image-1256443715.cos.ap-guangzhou.myqcloud.com/2026-07-24-132618-30f209ddae87.png" alt="" loading="lazy"></p>
+<h2 id="1-1-%E5%BA%94%E5%AF%B9%E6%96%B9%E6%A1%88">1.1 应对方案</h2>
+<p>所以在一个新的变更上线前(无论是功能上线/应用上线/已有的改动)，我们必须对变更后所需要观测的指标做详细的梳理，对相应的功能改动做相关的建模，观察是否符合预期。例如新增功能的错误码/新增报错的异常日志等等，否则有了问题而无法感知往往会造成持续很长时间的大问题。标准监控都只是技术上的指标，只能反映系统本身的健康程度，而无法反映业务的问题。业务本身的指标需要人来建设。</p>
+<h1 id="2-%E9%97%AE%E9%A2%98%E6%9C%89%E6%8C%87%E6%A0%87%E5%8F%8D%E6%98%A0-%E4%BD%86%E6%8C%87%E6%A0%87%E7%9C%8B%E4%B8%8D%E5%85%A8">2. 问题有指标反映，但指标看不全</h1>
+<p>有时候，我们配置了相应的监控，对应的指标也能反映相应的问题。但由于指标的局限性，让我们往往只能看到一部分的信息，从而导致我们误判。</p>
+<h2 id="2-1-%E6%95%B4%E4%BD%93%E7%9C%8B%E4%B8%8D%E8%A7%81%E5%B1%80%E9%83%A8">2.1 整体看不见局部</h2>
+<p>当我们计算一个指标，为了反映其整体的情况。对其做了时间或者空间上的平均后，就损失了局部的数据分布，导致我们会忽略一些关键的局部信息。</p>
+<h3 id="2-1-1-%E6%8D%9F%E5%A4%B1%E6%97%B6%E9%97%B4%E4%B8%8A%E7%9A%84%E5%88%86%E5%B8%83">2.1.1 损失时间上的分布</h3>
+<p>这里我们就以最常见的接口耗时为例，我们看到的接口耗时往往是平均耗时，而且是1分钟之内的平均耗时。但一旦牵涉到平均，就会掩盖很多问题。例如，在一个QPS很高的接口中，大量的低耗时请求和超高耗时请求平均，导致我们无法从平均中感知到有的请求其实很慢，这种往往会引起漏告。如下图所示: <img src="/blog/assets/source/image/remote/blog-image-1256443715.cos.ap-guangzhou.myqcloud.com/2026-07-24-132659-fba9d10da72b.png" alt="" loading="lazy">ß</p>
+<h4 id="2-1-1-1-%E5%A6%82%E4%BD%95%E5%BA%94%E5%AF%B9">2.1.1.1 如何应对</h4>
+<p>所以我们在监控中往往需要关注avg/tp50/tp99/tp999这些指标。更进一步，我们可以使用直方图这样的工具观察请求在不同耗时区间的分布，用来观测潜在的问题。</p>
+<p class="image-only"><img src="/blog/assets/source/image/remote/blog-image-1256443715.cos.ap-guangzhou.myqcloud.com/2026-07-24-132720-a1faa7b7bc5a.png" alt="" loading="lazy"></p>
+<h3 id="2-1-2-%E6%8D%9F%E5%A4%B1%E7%A9%BA%E9%97%B4%E4%B8%8A%E7%9A%84%E5%88%86%E5%B8%83">2.1.2 损失空间上的分布</h3>
+<p>上文描述的是指标在时间上平均出现了失明的问题。有时候，指标在空间上平均也会出现失明。在这里举一个线上真实发生的例子，在促销活动期间，流量暴涨导致我们应用访问Redis超时。但是Redis本身的CPU负载并不高。Redis由于是单线程处理的，所以我们往往将多台Redis部署到一台物理机上，观察物理机本身的CPU.busy其实不高。Redis本身对应的CPU也不高，但却出现了超时的现象。 当我们展开物理机本身的所有CPU针对每个CPU利用率做观察的时候，发现CPU 0 的软中断利用率超过 90%，主要消耗在 <code>NET_RX_SOFTIRQ</code> 上，而网卡 IRQ 就绑在 CPU 0上。所有同物理机的Redis实例都依赖这个CPU来分发网络数据自然导致了Redis请求超时。如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/remote/blog-image-1256443715.cos.ap-guangzhou.myqcloud.com/2026-07-25-140838-a899b978bf1d.png" alt="" loading="lazy"></p>
+<p>当然了，这个问题明显是可以优化的，因为现代网卡会有多个队列对应多个irq，可以将这些irq绑到多个CPU上解决这个问题。</p>
+<h3 id="2-1-2-1-%E5%A6%82%E4%BD%95%E5%BA%94%E5%AF%B9">2.1.2.1 如何应对</h3>
+<p>这个问题其实就是我们只关注了Redis本身应用对应的CPU以及宿主机本身的平均CPU负载情况。我们无法从这两个信息中发现这个问题还关联到一个隐蔽的处理网卡irq相关的CPU。所以，我们需要根据负载在空间上的分布做进一步的下钻，例如对单CPU的利用率配置相应的告警来及时的发现这种问题。</p>
+<h2 id="2-2-%E5%B1%80%E9%83%A8%E7%9C%8B%E4%B8%8D%E8%A7%81%E6%95%B4%E4%BD%93">2.2 局部看不见整体</h2>
+<p>当我们观测局限在某个局部环境的时候，往往无法从指标中感知到整体的变化。这种问题在容器或者KVM这种虚拟化技术中频发，因为这些技术本身的目的就是为了将运行在其上的应用认为它拥有整台机器的所有资源，所以屏蔽了各种能让容器内部感知到外部的通路。下面就举两个例子:</p>
+<h3 id="2-2-1-%E5%AE%B9%E5%99%A8cpu%E6%97%A0%E6%B3%95%E5%8F%8D%E6%98%A0%E7%9C%9F%E5%AE%9E%E8%B4%9F%E8%BD%BD">2.2.1 容器CPU无法反映真实负载</h3>
+<p>例如我们在容器中采集CPU利用率，经常会出现容器CPU很正常甚至利用率偏低，但是请求处理就是变慢了的情况，这种往往就是背后的宿主机CPU利用率打满了。在这里举一个例子，如果宿主机超卖一倍，也就是64核的机器当128核使用，原本应该部署8个8核的容器的宿主机现在部署了16个容器。每个容器觉得自己有8核可以独占，但实际上平均是两个容器在使用这8核。那么在极端情况下，这两个容器都在抢占这8核的CPU，那么实际每个容器平均下来只能用到4核。那么在容器内采集的CPU利用率也最多就只能到50%。如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/remote/blog-image-1256443715.cos.ap-guangzhou.myqcloud.com/2026-07-24-132831-b413f26f56e1.png" alt="" loading="lazy"></p>
+<h3 id="2-2-2-%E5%AE%B9%E5%99%A8%E5%86%85%E5%AD%98%E4%BD%BF%E7%94%A8%E7%8E%87%E6%AD%A3%E5%B8%B8%E4%BD%86%E5%AE%9E%E9%99%85%E8%B7%A8numa%E8%AE%BF%E9%97%AE">2.2.2 容器内存使用率正常但实际跨NUMA访问</h3>
+<p>这又是笔者在生产环境遇到的例子，表现为在某个时间点之后扩容出来的相同配置的容器中应用的99线会比之前的高不少。而他们的CPU利用率和内存使用率都基本一致。在经过深入分析后才发现，新扩容出来的容器开了numa均衡(旧的容器是绑定到单个Numa Node的)，当负载上来之后，会产生跨numa访问，虽然内存的利用率都是一样的，但有一半的内存访问额外多了跨Numa Node的损耗导致99线变高，造成了一系列的问题。内存利用率这种传统资源指标只能描述用了多少资源，但无法刻画使用资源的质量和访问路径。如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/remote/blog-image-1256443715.cos.ap-guangzhou.myqcloud.com/2026-07-24-132847-319350a7d5b1.png" alt="" loading="lazy"></p>
+<h3 id="2-2-3-%E5%BA%94%E5%AF%B9%E6%96%B9%E6%A1%88">2.2.3 应对方案</h3>
+<p>很明显的，仅依靠容器内部的传统资源利用率指标，往往无法感知上述变化。那我们只能在宿主机层面着手，让宿主机本身能给出相应问题的指标才能做到有效的观测。但幸运的是，经过这么多年的发展，容器的监控体系愈发完善，对于CPU利用率的盲点我们可以观测nr_throttled/运行队列长度/宿主机 CPU 利用率，对于跨NUMA访问的盲点我们可以观测memory.numa_stat中内存分布随时间的变化来推断。更进一步，由于很多局部指标反映不了整体，所以我们在日常观测体系搭建的时候需要将局部和整体的指标相关联，不能因为局部指标的正常而不去观测整体指标。</p>
+<h1 id="3-%E6%80%BB%E7%BB%93">3 总结</h1>
+<p>尽管我们有非常多的指标，这些指标也指引我们能够防范和处理大量的问题。但指标本身只是事实的投影，往往会出现指标失明的现象。我们需要知道我们指标的盲点，然后针对盲点做针对性的处理，例如增加额外指标的统计与观测。当然，指标不可能无限的增加下去，不可能存在一个完美的观测系统能够让我们观测到所有潜在的问题。高可用的本质不是发现所有问题，而是在出现未知问题的情况下，让系统具备承受和恢复故障的能力，所以我们建设了压测/降级/限流/冗余等一系列手段去保护我们的核心业务。真正的危险不是看不见，而是以为看见了全部。</p></div>
+    <nav class="prev-next"><a href="/blog/articles/post-cc3a6927.html"><small>上一篇</small><span>高可用之路-闲聊监控指标的局限</span></a></nav>
+  </article>
+  <aside class="article-related">
+    <h2>同类文章</h2><a href="/blog/articles/post-cc3a6927.html">高可用之路-闲聊监控指标的局限</a>
+<a href="/blog/articles/post-624780b7.html">高可用之路-可用、高性能、高可用</a>
+  </aside>
+</main>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, securityLevel: "loose" });
+</script>
+</body>
+</html>

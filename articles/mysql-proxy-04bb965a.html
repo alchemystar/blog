@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="笔者觉得Cobar之类的分库分表最神奇的部分就是靠一条sql查询不同schema下(甚至不同实例下)的不同的表。例如 以笔者这种刨根到底的性格当然要把这个过程DIY出来。 由于Cobar对MySql的连接是BIO的。而笔者喜欢NIO,于是用NIO将Corbar的多节点查询全部重写(基于Netty)。...">
+  <title>MySql-Proxy之多路结果集归并 - 苍天环绕的小世界</title>
+  <link rel="stylesheet" href="/blog/assets/site.css?v=20261007-contact-page">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="/blog/">苍天环绕的小世界</a>
+  <nav><a href="/blog/">首页</a><a class="nav-featured" href="/blog/featured.html">精品阅读</a><a href="/blog/#articles">文章</a><a href="/blog/contact.html">联系我</a></nav>
+</header>
+<main class="article-layout">
+  <aside class="article-aside">
+    <a class="back-link" href="/blog/">返回首页</a>
+    <div class="toc"><h2>目录</h2><a class="toc-level-1" href="#mysql-proxy%E4%B9%8B%E5%A4%9A%E8%B7%AF%E7%BB%93%E6%9E%9C%E9%9B%86%E5%BD%92%E5%B9%B6">MySql-Proxy之多路结果集归并</a>
+<a class="toc-level-1" href="#%E5%A4%9A%E8%B7%AF%E5%BD%92%E5%B9%B6%E5%8E%9F%E7%90%86">多路归并原理</a>
+<a class="toc-level-1" href="#%E5%A4%9A%E8%8A%82%E7%82%B9%E5%8F%91%E9%80%81select%E8%AF%AD%E5%8F%A5">多节点发送select语句</a>
+<a class="toc-level-1" href="#%E5%A4%9A%E8%8A%82%E7%82%B9%E5%BD%92%E5%B9%B6%E7%BB%93%E6%9E%9C%E9%9B%86">多节点归并结果集</a>
+<a class="toc-level-2" href="#%E5%BD%92%E5%B9%B6resultset%E7%BB%93%E6%9E%9C%E9%9B%86">归并ResultSet结果集</a>
+<a class="toc-level-2" href="#%E5%8E%BB%E6%8E%89%E5%A4%9A%E4%BD%99%E7%9A%84%E7%BB%93%E6%9E%84%E6%8F%8F%E8%BF%B0%E4%BF%A1%E6%81%AF">去掉多余的结构描述信息</a>
+<a class="toc-level-3" href="#fieldlist%E9%98%B6%E6%AE%B5%E7%9A%84%E5%A4%84%E7%90%86">fieldList阶段的处理:</a>
+<a class="toc-level-3" href="#row%E9%98%B6%E6%AE%B5%E7%9A%84%E5%A4%84%E7%90%86">Row阶段的处理</a>
+<a class="toc-level-3" href="#lasteof%E9%98%B6%E6%AE%B5">LastEof阶段</a>
+<a class="toc-level-1" href="#%E4%BE%8B%E5%AD%90">例子</a>
+<a class="toc-level-1" href="#github%E9%93%BE%E6%8E%A5">GitHub链接</a>
+<a class="toc-level-1" href="#%E7%A0%81%E4%BA%91%E9%93%BE%E6%8E%A5">码云链接</a>
+<a class="toc-level-1" href="#%E5%8E%9F%E6%96%87%E9%93%BE%E6%8E%A5">原文链接</a></div>
+  </aside>
+  <article class="article">
+    <header class="article-title">
+      <div class="meta"><span>MySQL</span><time>2017.04.06</time><span>2 min read</span></div>
+      <h1>MySql-Proxy之多路结果集归并</h1>
+      <p>笔者觉得Cobar之类的分库分表最神奇的部分就是靠一条sql查询不同schema下(甚至不同实例下)的不同的表。例如 以笔者这种刨根到底的性格当然要把这个过程DIY出来。 由于Cobar对MySql的连接是BIO的。而笔者喜欢NIO,于是用NIO将Corbar的多节点查询全部重写(基于Netty)。...</p>
+    </header>
+    <div class="prose"><h1 id="mysql-proxy%E4%B9%8B%E5%A4%9A%E8%B7%AF%E7%BB%93%E6%9E%9C%E9%9B%86%E5%BD%92%E5%B9%B6">MySql-Proxy之多路结果集归并</h1>
+<p>笔者觉得Cobar之类的分库分表最神奇的部分就是靠一条sql查询不同schema下(甚至不同实例下)的不同的表。例如</p>
+<pre><code class="language-">select * from t_test; // 映射为
+	|------select * from schema1.t_test
+	|------select * from schema2.t_test
+ResultSet // 返回结果集为两者的归并	
+	|--schema1.t_test.ResultSet
+	|--schema2.t_test.ResultSet</code></pre>
+<p>以笔者这种刨根到底的性格当然要把这个过程DIY出来。 由于Cobar对MySql的连接是BIO的。而笔者喜欢NIO,于是用NIO将Corbar的多节点查询全部重写(基于Netty)。NIO的难度更大，性能也更好，这个重写的过程就记录成博客，以飨读者。</p>
+<h1 id="%E5%A4%9A%E8%B7%AF%E5%BD%92%E5%B9%B6%E5%8E%9F%E7%90%86">多路归并原理</h1>
+<h1 id="%E5%A4%9A%E8%8A%82%E7%82%B9%E5%8F%91%E9%80%81select%E8%AF%AD%E5%8F%A5">多节点发送select语句</h1>
+<p class="image-only"><img src="/blog/assets/source/image/lancelot/lancelot_select.png" alt="codegen" loading="lazy"></p>
+<p>当客户端发送给select * from test后，Lancelot会根据配置将语句将当前语句路由到多个不同的DB实例上，如上图所示。 FrontEnd:用来和client交互，一个FrontEnd可以对应多个Backend BackEnd:用来和DB交互</p>
+<h1 id="%E5%A4%9A%E8%8A%82%E7%82%B9%E5%BD%92%E5%B9%B6%E7%BB%93%E6%9E%9C%E9%9B%86">多节点归并结果集</h1>
+<p class="image-only"><img src="/blog/assets/source/image/lancelot/lancelot_resultset.png" alt="codegen" loading="lazy"></p>
+<p>每条语句在一个DB实例上面执行后，都会返回一个ResultSet结果集,在此需要将多个结果集归并成一个统一的结果集，然后返回给client,这样client就感觉像查询一个DB实例一样。 如上图所示,归并过程在下面讲解。</p>
+<h2 id="%E5%BD%92%E5%B9%B6resultset%E7%BB%93%E6%9E%9C%E9%9B%86">归并ResultSet结果集</h2>
+<p>在讲如何归并前，我们需要重温一下MySql返回结果集的结构, 其详细描述见笔者博客:</p>
+<pre><code class="language-">https://my.oschina.net/alchemystar/blog/834150</code></pre>
+<p>其协议格式如下所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/mysqlimage/resultset.png" alt="image" loading="lazy"></p>
+<p>由上图可见， 其中的Row才是真正的数据内容。而其余的例如,field_count、fields 、eof以及last_eof则仅仅是携带数据格式的信息。 如果要多路归并成一路的话，field_count、fields、eof以及last_eof这些只需要返回给client一份即可。</p>
+<h2 id="%E5%8E%BB%E6%8E%89%E5%A4%9A%E4%BD%99%E7%9A%84%E7%BB%93%E6%9E%84%E6%8F%8F%E8%BF%B0%E4%BF%A1%E6%81%AF">去掉多余的结构描述信息</h2>
+<p>现在根据协议结构将Frontend归并结果集的代码阶段分为三个: (1)fieldList阶段: 由于field_count、fields、eof这三个阶段是连续的，于是将其合并成一个状态。 (2)Row阶段:顾名思义，接收DB返回的数据阶段。 (3)LastEof阶段:最后的收尾阶段，每个结果集的last_eof表示此结果集的结束，只有所有的last_eof都收到之后才能表示结果的结束。</p>
+<h3 id="fieldlist%E9%98%B6%E6%AE%B5%E7%9A%84%E5%A4%84%E7%90%86">fieldList阶段的处理:</h3>
+<p>首先每个Backend都接收field_count,fields,eof。当其接收到eof之后，收到row之前，向Frontend提交这些信息。如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/lancelot/lancelot_fields.png" alt="codegen" loading="lazy"></p>
+<p>当Frontend获取到Backend1的feilds信息之后，就开始接收Row,并丢弃其余Backend的fields信息。代码如下:</p>
+<pre><code class="language-">public void fieldListResponse(List&lt;BinaryPacket&gt; fieldList) {
+    lock.lock();
+    try {
+        if(!isFailed.get()) {
+            // 如果还没有传过fieldList的话,则传递
+            if (!fieldEofReturned) {
+                writeFiledList(fieldList);
+                fieldEofReturned = true;
+            }
+        }
+    } finally {
+        lock.unlock();
+    }
+}</code></pre>
+<h3 id="row%E9%98%B6%E6%AE%B5%E7%9A%84%E5%A4%84%E7%90%86">Row阶段的处理</h3>
+<p>当Frontend进入Row阶段之后，处理比较简单，Backend发送的任何Row都向前段传输，如果是Backend的fields信息则丢弃。如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/lancelot/lancelot_row.png" alt="codegen" loading="lazy"></p>
+<h3 id="lasteof%E9%98%B6%E6%AE%B5">LastEof阶段</h3>
+<p>每当一个Backend收到last_eof之后，表明当前Backend的结果集已经结束。Frontend需要等所有的Backend结果集结束之后，再发送一个last_eof告诉client，所有的结果已经完了，如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/lancelot/lancelot_last_eof.png" alt="codegen" loading="lazy"></p>
+<p>代码如下所示:</p>
+<pre><code class="language-">// last eof response
+public void lastEofResponse(BinaryPacket bin) {
+    lock.lock();
+    try {
+        logger.info(&quot;last eof &quot;);
+        if (decrementCountBy()) {
+            if (!isFailed.get()) {
+                bin.packetId = ++packetId;
+                logger.info(&quot;write eof okay&quot;);
+                bin.write(session.getCtx());
+                // 如果是自动提交,则释放session
+                if(session.getSource().isAutocommit()){
+                    session.release();
+                }
+            }else{
+                notifyFailure();
+            }
+        }
+    } finally {
+        lock.unlock();
+    }
+}</code></pre>
+<h1 id="%E4%BE%8B%E5%AD%90">例子</h1>
+<p>运行lancelot中的LanceLotServer的main命令，其就自动连接了我本机的MySql。 配置之类的在SystemConfig中进行修改(现在还没有做到配置文件化)。 我用mysqlclient连接到lancetlot,然后运行select * from test命令。结果如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/lancelot/lancelot_example.png" alt="codegen" loading="lazy"></p>
+<h1 id="github%E9%93%BE%E6%8E%A5">GitHub链接</h1>
+<p>https://github.com/alchemystar/Lancelot</p>
+<h1 id="%E7%A0%81%E4%BA%91%E9%93%BE%E6%8E%A5">码云链接</h1>
+<p>https://git.oschina.net/alchemystar/Lancelot</p>
+<h1 id="%E5%8E%9F%E6%96%87%E9%93%BE%E6%8E%A5">原文链接</h1></div>
+    <nav class="prev-next"><a href="/blog/articles/mysql-binlog-c2503567.html"><small>上一篇</small><span>MySql-Binlog协议详解-流程篇</span></a><a href="/blog/articles/mysql-6961acfc.html"><small>下一篇</small><span>MySql-两阶段加锁协议</span></a></nav>
+  </article>
+  <aside class="article-related">
+    <h2>同类文章</h2><a href="/blog/articles/mysql-seconds-behind-master-fceee9b1.html">MySQL-Seconds_behind_master的精度误差</a>
+<a href="/blog/articles/mysql-io-b7cf67b1.html">从MySQL源码看其网络IO模型</a>
+<a href="/blog/articles/mysql-mvcc-f01bb5cb.html">MySQL多版本并发控制机制(MVCC)-源码浅析</a>
+<a href="/blog/articles/mysql-6961acfc.html">MySql-两阶段加锁协议</a>
+<a href="/blog/articles/mysql-binlog-61d26458.html">MySql-Binlog协议详解-报文篇</a>
+<a href="/blog/articles/mysql-binlog-c2503567.html">MySql-Binlog协议详解-流程篇</a>
+<a href="/blog/articles/mysql-8938d3bc.html">MySql协议讲解-事务协议</a>
+<a href="/blog/articles/mysql-crud-result-4b7dbe60.html">MySql协议详解-CRUD与Result篇</a>
+<a href="/blog/articles/mysql-handshake-fdfe17a7.html">MySql协议详解-HandShake握手篇</a>
+  </aside>
+</main>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, securityLevel: "loose" });
+</script>
+</body>
+</html>

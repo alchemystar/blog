@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="核心反常点：访问非洲服务商域名却解析到美国 IP，但非洲节点又确实收到了请求，问题不在单次 DNS 结果，而在不同地域、链路和解析视角不一致。">
+  <title>日常问题排查-奇怪的DNS - 苍天环绕的小世界</title>
+  <link rel="stylesheet" href="/blog/assets/site.css?v=20261007-contact-page">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="/blog/">苍天环绕的小世界</a>
+  <nav><a href="/blog/">首页</a><a class="nav-featured" href="/blog/featured.html">精品阅读</a><a href="/blog/#articles">文章</a><a href="/blog/contact.html">联系我</a></nav>
+</header>
+<main class="article-layout">
+  <aside class="article-aside">
+    <a class="back-link" href="/blog/">返回首页</a>
+    <div class="toc"><h2>目录</h2><a class="toc-level-1" href="#%E5%89%8D%E8%A8%80">前言</a>
+<a class="toc-level-1" href="#%E9%97%AE%E9%A2%98%E7%8E%B0%E8%B1%A1">问题现象</a>
+<a class="toc-level-1" href="#traceroute">Traceroute</a>
+<a class="toc-level-1" href="#%E9%80%9A%E8%BF%87bgp%E6%89%BE%E5%88%B0%E7%9B%B8%E5%BA%94ip%E7%9A%84%E8%BF%90%E8%90%A5%E5%95%86">通过BGP找到相应IP的运营商</a>
+<a class="toc-level-1" href="#%E8%AF%A2%E9%97%AE%E7%9B%B8%E5%85%B3%E5%8F%82%E4%B8%8E%E6%96%B9">询问相关参与方</a>
+<a class="toc-level-1" href="#%E5%90%8E%E7%BB%AD%E4%BC%98%E5%8C%96">后续优化</a>
+<a class="toc-level-1" href="#%E6%80%BB%E7%BB%93">总结</a></div>
+  </aside>
+  <article class="article">
+    <header class="article-title">
+      <div class="meta"><span>日常问题排查</span><time>2025.03.08</time><span>2 min read</span></div>
+      <h1>日常问题排查-奇怪的DNS</h1>
+      <p>核心反常点：访问非洲服务商域名却解析到美国 IP，但非洲节点又确实收到了请求，问题不在单次 DNS 结果，而在不同地域、链路和解析视角不一致。</p>
+    </header>
+    <div class="prose"><h1 id="%E5%89%8D%E8%A8%80">前言</h1>
+<p>日常 Bug 排查系列都是一些简单 Bug 的排查。笔者将在这里介绍一些排查 Bug 的简单技巧，同时顺便积累素材。</p>
+<h1 id="%E9%97%AE%E9%A2%98%E7%8E%B0%E8%B1%A1">问题现象</h1>
+<p>国际化的兄弟团队向笔者反映了一个问题。我们在访问一个非洲的服务商提供服务的时候，根据DNS解析却是一个美国的IP。但通过登陆非洲节点的机器来看，还确实找到了相应的请求日志，如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/remote/blog-image-1256443715.cos.ap-guangzhou.myqcloud.com/2025-02-14-140328-d223f7cea557.png" alt="" loading="lazy"></p>
+<p>我们的预期是直接访问非洲节点，那么问题就来了，访问这个DNS解析出来的IP是不是符合预期呢？如果符合预期，那么为什么访问的IP地址是美国的呢？</p>
+<h1 id="traceroute">Traceroute</h1>
+<p>那么这个问题首先笔者想到的就是traceRoute，结果如下所示:</p>
+<pre><code class="language-">traceroute -I targetIp (这边-I是使用icmp消息)
+1 ip1 
+2 ip2
+3 ip3
+4 * * * 
+5 * * *
+6 * * * 
+7 * * * 
+......
+16 targetIP</code></pre>
+<p>由于安全等原因，途中经过的很多跳路由器关闭了对ICMP TTL为0的超时响应功能。导致我们丢失了中间路径，只能看到前面几跳和最后的targetIp，所以无法得知路由器的沿途路径。那么依旧无法判断请求是不是符合我们的预期。</p>
+<h1 id="%E9%80%9A%E8%BF%87bgp%E6%89%BE%E5%88%B0%E7%9B%B8%E5%BA%94ip%E7%9A%84%E8%BF%90%E8%90%A5%E5%95%86">通过BGP找到相应IP的运营商</h1>
+<p>既然Traceroute无法判断，那么笔者就考虑其它的辅助决策手段，例如BGP。于是笔者通过bgp.tools输入相应的IP发现它属于某国外CDN提供商A。然后登陆它的官网，发现它有一个功能叫做API加速。类似一个高防服务器，主要功能就是抵挡一些ddos攻击。因为我们对于这个域名的操作是POST而不是GET接口，无法和页面一样使用CDN的缓存加速。所以笔者判定大概率就是使用了这个类似高防服务器的API加速功能。于是，笔者就可以推测出拓扑是下面这个样子:</p>
+<p class="image-only"><img src="/blog/assets/source/image/remote/blog-image-1256443715.cos.ap-guangzhou.myqcloud.com/2025-02-14-140638-66c7962a4b07.png" alt="" loading="lazy"></p>
+<h1 id="%E8%AF%A2%E9%97%AE%E7%9B%B8%E5%85%B3%E5%8F%82%E4%B8%8E%E6%96%B9">询问相关参与方</h1>
+<p>和非洲的服务商交流了一下，发现他们确实是使用了CDN加速功能。于是将推测发给相应的CDN接口人，让他排查了一下。确实是配置错了。我们的请求会先去先跨越半个地球去美国节点，然后美国节点再跨越半个地球去非洲节点。相当于我们的请求绕了地球一圈！</p>
+<h1 id="%E5%90%8E%E7%BB%AD%E4%BC%98%E5%8C%96">后续优化</h1>
+<p>后续的优化就非常直接了，让他们在四川找一个加速节点，由于少了四川到美国的这一条横跨半个地球的链路，耗时大幅度减少。虽然这是个非常简单的问题，但是获得了非常大的收益。如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/remote/blog-image-1256443715.cos.ap-guangzhou.myqcloud.com/2025-02-14-140922-9c3cb60e6379.png" alt="" loading="lazy"></p>
+<h1 id="%E6%80%BB%E7%BB%93">总结</h1>
+<p>任何配置都有可能出错，这些错误可能非常隐蔽，它不会导致请求错误但是会影响耗时。虽然问题非常本身简单，但找到这个问题确需要我们对系统的每一处地方做仔细的Check。解决这些小问题往往会有非常大的收益！</p>
+<p class="image-only"><img src="/blog/assets/source/image/remote/oscimg.oschina.net/up-0124e4cdd8e9cecb13071dad7b6544ebb71-ff1bfa7e71cd.png" alt="" loading="lazy"></p></div>
+    <nav class="prev-next"><a href="/blog/articles/cpu-busy-5-7a232df0.html"><small>上一篇</small><span>日常问题排查-同应用同流量，为什么CPU.busy差了 5 倍？</span></a><a href="/blog/articles/post-0abe94ca.html"><small>下一篇</small><span>日常问题排查-改表时读数据不一致</span></a></nav>
+  </article>
+  <aside class="article-related">
+    <h2>同类文章</h2><a href="/blog/articles/younggc-84c79a21.html">日常问题排查-Younggc突然变长</a>
+<a href="/blog/articles/post-ce618c61.html">日常问题排查-空闲一段时间再请求就超时</a>
+<a href="/blog/articles/post-a12062b0.html">日常问题排查-偶发性读数据不一致</a>
+<a href="/blog/articles/mvcc-for-update-6ea5409f.html">日常问题排查-MVCC和for update混用导致读数据不一致</a>
+<a href="/blog/articles/post-0abe94ca.html">日常问题排查-改表时读数据不一致</a>
+<a href="/blog/articles/post-df9748ee.html">日常问题排查-连接突然全部关闭</a>
+<a href="/blog/articles/post-625093a1.html">日常问题排查-集群逐步失去响应</a>
+<a href="/blog/articles/mq-a6fe4c2d.html">日常问题排查-mq不消费</a>
+<a href="/blog/articles/post-aba46ada.html">日常问题排查-读从库没有原子性？</a>
+<a href="/blog/articles/redis-d4ca6a5a.html">日常问题排查-系统失去响应-Redis使用不当</a>
+<a href="/blog/articles/post-e443a4a8.html">日常问题排查-请求偶尔超时-磁盘故障</a>
+<a href="/blog/articles/post-ff1bd808.html">日常问题排查-调用超时</a>
+<a href="/blog/articles/cpu-busy-5-7a232df0.html">日常问题排查-同应用同流量，为什么CPU.busy差了 5 倍？</a>
+  </aside>
+</main>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, securityLevel: "loose" });
+</script>
+</body>
+</html>

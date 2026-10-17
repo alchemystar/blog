@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="新冠疫情让笔者不禁回忆起10多年前甲流流行的那段过往。也就是那时，在封闭的大学宿舍里,笔者开启了自己的编程之旅。 初涉编程时那个C语言展示hello world的黑框并没有激起笔者的任何兴趣。为什么寥寥几句就可在屏幕上展示输出成为萦绕笔者心头的一个疑问。在全校封闭、无法组团dota、百无聊赖的境遇下...">
+  <title>我的编程之旅 - 苍天环绕的小世界</title>
+  <link rel="stylesheet" href="/blog/assets/site.css?v=20261007-contact-page">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="/blog/">苍天环绕的小世界</a>
+  <nav><a href="/blog/">首页</a><a class="nav-featured" href="/blog/featured.html">精品阅读</a><a href="/blog/#articles">文章</a><a href="/blog/contact.html">联系我</a></nav>
+</header>
+<main class="article-layout">
+  <aside class="article-aside">
+    <a class="back-link" href="/blog/">返回首页</a>
+    <div class="toc"><h2>目录</h2><a class="toc-level-1" href="#%E6%88%91%E7%9A%84%E7%BC%96%E7%A8%8B%E4%B9%8B%E6%97%85">我的编程之旅</a>
+<a class="toc-level-1" href="#%E5%88%9D%E5%AD%A6%E6%B1%87%E7%BC%96">初学汇编</a>
+<a class="toc-level-1" href="#%E5%86%8D%E5%AD%A6c%E8%AF%AD%E8%A8%80">再学C语言</a>
+<a class="toc-level-1" href="#%E6%93%8D%E4%BD%9C%E7%B3%BB%E7%BB%9F%E5%85%A5%E9%97%A8">操作系统入门</a>
+<a class="toc-level-1" href="#%E7%BD%91%E7%BB%9C%E7%BC%96%E7%A8%8B">网络编程</a>
+<a class="toc-level-1" href="#%E5%8D%8F%E8%AE%AE%E6%A0%88">协议栈</a>
+<a class="toc-level-1" href="#linux">Linux</a>
+<a class="toc-level-2" href="#linux%E5%86%85%E6%A0%B8">Linux内核</a>
+<a class="toc-level-2" href="#linux%E5%86%85%E6%A0%B8%E5%AD%90%E6%A8%A1%E5%9D%97">Linux内核子模块</a>
+<a class="toc-level-1" href="#source-code">Source Code</a>
+<a class="toc-level-1" href="#%E6%9C%80%E5%90%8E">最后</a>
+<a class="toc-level-1" href="#%E6%9C%80%E5%90%8E%E7%9A%84%E6%9C%80%E5%90%8E">最后的最后</a>
+<a class="toc-level-1" href="#github%E9%93%BE%E6%8E%A5">GITHUB链接</a>
+<a class="toc-level-1" href="#%E5%8E%9F%E6%96%87%E9%93%BE%E6%8E%A5">原文链接</a></div>
+  </aside>
+  <article class="article">
+    <header class="article-title">
+      <div class="meta"><span>其它</span><time>2020.03.09</time><span>5 min read</span></div>
+      <h1>我的编程之旅</h1>
+      <p>新冠疫情让笔者不禁回忆起10多年前甲流流行的那段过往。也就是那时，在封闭的大学宿舍里,笔者开启了自己的编程之旅。 初涉编程时那个C语言展示hello world的黑框并没有激起笔者的任何兴趣。为什么寥寥几句就可在屏幕上展示输出成为萦绕笔者心头的一个疑问。在全校封闭、无法组团dota、百无聊赖的境遇下...</p>
+    </header>
+    <div class="prose"><h1 id="%E6%88%91%E7%9A%84%E7%BC%96%E7%A8%8B%E4%B9%8B%E6%97%85">我的编程之旅</h1>
+<p>新冠疫情让笔者不禁回忆起10多年前甲流流行的那段过往。也就是那时，在封闭的大学宿舍里,笔者开启了自己的编程之旅。</p>
+<h1 id="%E5%88%9D%E5%AD%A6%E6%B1%87%E7%BC%96">初学汇编</h1>
+<p>初涉编程时那个C语言展示hello world的黑框并没有激起笔者的任何兴趣。为什么寥寥几句就可在屏幕上展示输出成为萦绕笔者心头的一个疑问。在全校封闭、无法组团dota、百无聊赖的境遇下，笔者开始着手去探索这一谜题。在学校书店入手了王爽编写的&lt;&lt;汇编语言&gt;&gt; &lt;div align=center&gt; &lt;img src=&quot;https://oscimg.oschina.net/oscnet/up-07314b8e388e8944f750fd47a8e5956d10c.JPEG&quot; width=&quot;175&quot; &gt; &lt;/div&gt; 读完并实践之后，揭开了计算机原理的冰山一角，从此一发不可收拾的爱上编程，尤其享受那种努力探索后恍然大悟的快感! 紧接着，开始汇编的第二本书: &lt;div align=center&gt; &lt;img src=&quot;https://oscimg.oschina.net/oscnet/up-c13c3ea0d1b1c1a2695b384915ff66f580f.JPEG&quot; width=&quot;175&quot; &gt; &lt;/div&gt; 使笔者学到了win32汇编的各种知识，意识到汇编的强大和其直接操纵底层的犀利。</p>
+<h1 id="%E5%86%8D%E5%AD%A6c%E8%AF%AD%E8%A8%80">再学C语言</h1>
+<p>在实际编写汇编时，深感其表现力方面的不便，例如一个浮点操作就需要专门的指令。于是又老老实实滚回去修炼C语言,入手了基本经典的书籍进行学习: &lt;div align=center&gt; &lt;img src=&quot;https://oscimg.oschina.net/oscnet/up-67b2388964dd4b5820a5a23c3e207051704.JPEG&quot;  width=&quot;130&quot; &gt; &lt;img src=&quot;https://oscimg.oschina.net/oscnet/up-466a31467c6a50d0bbeee6b01efc4e4e3b3.JPEG&quot; width=&quot;130&quot; &gt; &lt;img src=&quot;https://oscimg.oschina.net/oscnet/up-14595cec0090ac42671c35f6f836987b5e5.JPEG&quot; width=&quot;130&quot; &gt; &lt;img src=&quot;https://oscimg.oschina.net/oscnet/up-ddc9a48e48455361f1d98d042c9ff1499a8.JPEG&quot; width=&quot;130&quot; &gt; &lt;/div&gt; 这次修炼毫无障碍，对于汇编的学习让笔者不知不觉突破了指针这个大关。 当然与C语言配套的必须还有数据结构和算法: &lt;div align=center&gt; &lt;img src=&quot;https://oscimg.oschina.net/oscnet/up-7f36bbb9fc4fd03f878ae6d7b865f108013.JPEG&quot;  width=&quot;150&quot; &gt; &lt;img src=&quot;https://oscimg.oschina.net/oscnet/up-cbf95f1cc68b0fe8c04698df0ad45829218.JPEG&quot;  width=&quot;151&quot; &gt; &lt;/div&gt;</p>
+<h1 id="%E6%93%8D%E4%BD%9C%E7%B3%BB%E7%BB%9F%E5%85%A5%E9%97%A8">操作系统入门</h1>
+<p>学完C语言后，也到了大学里教授操作系统课的时候,课上用的教材是&lt;&lt;操作系统- 精髓与设计原理&gt;&gt;,同时笔者自己也搞了本&lt;&lt;现代操作系统&gt;&gt;研读。 &lt;div align=center&gt; &lt;img src=&quot;https://oscimg.oschina.net/oscnet/up-67e9c5ecbe3a06096ce6bbcd7de6e75e222.JPEG&quot;  width=&quot;150&quot; &gt; &lt;img src=&quot;https://oscimg.oschina.net/oscnet/up-e77ff03aaccba7019feecefc6d29722f10f.JPEG&quot;  width=&quot;149&quot; &gt; &lt;/div&gt; 学完上述两本后，心中涌起了造轮子的欲望，于是入手了下面这本: &lt;div align=center&gt; &lt;img src=&quot;https://oscimg.oschina.net/oscnet/up-b5689250669d94e0c857c92b2b095c15a7c.JPEG&quot;  width=&quot;150&quot; &gt; &lt;/div&gt; 书中事无巨细的讲解让笔者一步一步从保护模式到进程实现再到键盘输入等完成了一个简单的toyos。这本书满足了笔者造轮子的愿望，就像书中说的那样，这一切的探索仅仅是从最原始的好奇心开始。</p>
+<h1 id="%E7%BD%91%E7%BB%9C%E7%BC%96%E7%A8%8B">网络编程</h1>
+<p>笔者读的是通信工程专业。自然的在下一步的学习中选择了网络编程。而网络编程书籍当中最经典的必须是UNP(配合APUE的前置学习效果更佳)。 &lt;div align=center&gt; &lt;img src=&quot;https://oscimg.oschina.net/oscnet/up-3684c71e1d61aad3813ba7c3dbf05d964c1.JPEG&quot;  width=&quot;150&quot; &gt; &lt;img src=&quot;https://oscimg.oschina.net/oscnet/up-3621edb27929e8e4f774103f2e23fdb3972.JPEG&quot;  width=&quot;148&quot; &gt; &lt;img src=&quot;https://oscimg.oschina.net/oscnet/up-c8649abc05f41515fdccb99fd5971ae1c98.JPEG&quot;  width=&quot;150&quot; &gt; &lt;/div&gt; 至今笔者所遇到的大部分网络编程模型依旧逃不出UNP的藩篱。 (注:APUE-&gt;UNIX环境高级编程,UNP-&gt;UNIX网络编程)</p>
+<h1 id="%E5%8D%8F%E8%AE%AE%E6%A0%88">协议栈</h1>
+<p>学完上述书籍后，自然又有了新的疑问，套接字(socket)底层是如何实现的？tcp/ip又是怎样工作的？于是笔者又开始探索起关于协议栈的内容。最先阅读的是Douglas E.Comer的&lt;&lt;用TCP/IP进行网际互联&gt;&gt;三卷，笔者个人觉得非常适合入门。 &lt;div align=center&gt; &lt;img src=&quot;https://oscimg.oschina.net/oscnet/up-532ccbdbca2f235a9e738a94ffe265cb595.png&quot;  width=&quot;150&quot; &gt; &lt;img src=&quot;https://oscimg.oschina.net/oscnet/up-1cfae6efed12e6e6946841c30926fb3574f.JPEG&quot;  width=&quot;153&quot; &gt; &lt;img src=&quot;https://oscimg.oschina.net/oscnet/up-92af3c7fc0980f3987055a9b27a7fcf7f3a.JPEG&quot;  width=&quot;150&quot; &gt; &lt;/div&gt; 就着上面书中的第二卷，笔者完成了第一个协议栈(XINU)的分析。 阅读完上面三卷后，意犹未尽，毕竟XINU是个并不流行的操作系统，于是捧起了TCPIP详解三卷。 &lt;div align=center&gt; &lt;img src=&quot;https://oscimg.oschina.net/oscnet/up-5cd28722d20bb763eb1d3d9af1a0be9c46c.JPEG&quot;  width=&quot;150&quot; &gt; &lt;img src=&quot;https://oscimg.oschina.net/oscnet/up-a15b5eb9da533e2e4f99f932fc25d6cae8f.JPEG&quot;  width=&quot;144&quot; &gt; &lt;img src=&quot;https://oscimg.oschina.net/oscnet/up-cae817bc2eaed45fa5ab9f20bb564fc4339.JPEG&quot;  width=&quot;149&quot; &gt; &lt;/div&gt; 其中卷二的tcpip实现基于BSD4.4-lite源码，无疑是tcpip最为广泛的实现,更加贴近现实。笔者花了大量的时间阅读了tcpip详解卷二，同时分析了BSD4.4的网络子系统。在此基础上，还顺带分析了专用于嵌入式的lwip协议栈。同时小试牛刀，解决了raw-os(某实时操作系统)适配lwip协议时关于free arp的一个初始化bug。Debug lwip协议栈的那个下午现在回想起来依旧令人心潮澎湃。</p>
+<h1 id="linux">Linux</h1>
+<h2 id="linux%E5%86%85%E6%A0%B8">Linux内核</h2>
+<p>工作后基本都在和linux打交道。按笔者一探到底的精神必然研读起linux内核。首先是啃了好几本大部头的linux内核著作。 &lt;div align=center&gt; &lt;img src=&quot;https://oscimg.oschina.net/oscnet/up-8e4d80b05dd1010647277b33205db11b43e.JPEG&quot;  width=&quot;135&quot; &gt; &lt;img src=&quot;https://oscimg.oschina.net/oscnet/up-cf8437f1b223359f8258cf45460e968714d.JPEG&quot;  width=&quot;135&quot; &gt; &lt;img src=&quot;https://oscimg.oschina.net/oscnet/up-28826055cc30bcbb714ef9dc37e22b314eb.JPEG&quot;  width=&quot;150&quot; &gt; &lt;img src=&quot;https://oscimg.oschina.net/oscnet/up-25dc19e80c6cb3e3338e4e7bcf6c4b1b352.JPEG&quot;  width=&quot;135&quot; &gt; &lt;/div&gt; 第一本，\&lt;\&lt;linux内核设计与实现&gt;&gt;(缩写lkd)比较薄，用来入门比较合适，能够建立起基本的linux内核图景。 第二本,\&lt;\&lt;深入理解Linux内核&gt;&gt;(缩写ulk)很厚，囊括了linux各个基本的子系统模块和其具体的实现机制，确实做到了深入理解这几个字。 第三本,\&lt;\&lt;深入linux内核架构&gt;&gt;(缩写PLKA)更厚。其于上面的\&lt;\&lt;深入linux内核&gt;&gt;相辅相成，ulk详细阐述的其一笔带过，ulk遗漏但重要的PLKA对其做了详细解释。 最后一本\&lt;\&lt;Linux内核源代码情景分析&gt;&gt;是国人写的，也非常不错，只是内核版本(2.4)有点老了，不过也是非常不错的补充。</p>
+<h2 id="linux%E5%86%85%E6%A0%B8%E5%AD%90%E6%A8%A1%E5%9D%97">Linux内核子模块</h2>
+<p>读完上述三本，应该算对内核应该有个基本的入门了吧。下面就是深入到内核的各个子模块的代码实现里了，于是笔者又读了: &lt;div align=center&gt; &lt;img src=&quot;https://oscimg.oschina.net/oscnet/up-91b8e92f61d71f14ca628f591f5f9987e3d.JPEG&quot;  width=&quot;150&quot; &gt; &lt;img src=&quot;https://oscimg.oschina.net/oscnet/up-c83f1bafe953ca06d10042f78e7d71a8013.JPEG&quot;  width=&quot;160&quot; &gt; &lt;img src=&quot;https://oscimg.oschina.net/oscnet/up-ffa2ca5de8a234d7c7c7e32599da5607e63.JPEG&quot;  width=&quot;153&quot; &gt; &lt;/div&gt; 第一本\&lt;\&lt;Linux网络技术内幕&gt;&gt;帮笔者梳理了linux内核网络子模块的各种关键代码路径。 第二本\&lt;\&lt;深入理解Linux虚拟内存管理&gt;&gt;虽然中文翻译的不太好，但确实是本好书，配合英文版帮笔者夯实了虚拟内存的基础。 第三本\&lt;\&lt;Linux设备驱动程序&gt;&gt;算是一个补充吧，由于笔者并不搞驱动，所以通过这本书了解下Linux驱动到底是怎么运行的。</p>
+<h1 id="source-code">Source Code</h1>
+<p>书籍只能带你走进内核，而深入内核则必须阅读the fucking source code!不同操作系统以及同操作系统不同内核版本间实现的各种细节会导致一些细微的差别,而这些差别真是书中得来的知识和实践的距离，剖析疑难问题有时必须在源码中寻觅才能抓住关键的线索。 笔者日常工作中很大一部分精力是解决疑难杂症，在遇到一些很底层的问题时往往会从内核源码着手，于是便有了博客里的一篇篇博文。</p>
+<h1 id="%E6%9C%80%E5%90%8E">最后</h1>
+<p>看到这里，大家会以为笔者一直在用C语言。其实笔者在工作中用到最多的是用JAVA写中间件(带gc的语言就是香)，笔者不断探索的经历成为了日常开发中极大的助力，很多号称复杂的概念机制完全阻挡不了笔者的脚步，可能是由于笔者对未知乐此不疲的探索不知不觉跨越了很多障碍吧。 当然，毕业后从C转到Java还是经历过一小段镇痛期的，原因就在于Java里面的内容实在太多了，一口气吸收那么多概念容易消化不良，尤其是Spring这个庞然大物，在此推荐一个极客时间的视频吧(PS:当时要是有这视频就不会那么辛苦的到处找资料学习Java了） &lt;div align=center&gt; &lt;img src=&quot;https://oscimg.oschina.net/oscnet/up-5cf8ef247156edb1c7534f8e221e6b4d7bc.JPEG&quot;  width=&quot;300&quot; &gt; &lt;/div&gt; 快速上手SpringBoot，你值得拥有。</p>
+<h1 id="%E6%9C%80%E5%90%8E%E7%9A%84%E6%9C%80%E5%90%8E">最后的最后</h1>
+<p>&lt;div align=center&gt; &lt;img src=&quot;https://oscimg.oschina.net/oscnet/up-b0d8e9b41a2c181d027c841afb63a3bb785.JPEG&quot;  width=&quot;500&quot; &gt; &lt;p&gt;武汉加油!湖北加油!中国加油!&lt;/p&gt; &lt;/div&gt;</p>
+<h1 id="github%E9%93%BE%E6%8E%A5">GITHUB链接</h1>
+<p>https://github.com/alchemystar</p>
+<h1 id="%E5%8E%9F%E6%96%87%E9%93%BE%E6%8E%A5">原文链接</h1></div>
+    <nav class="prev-next"><a href="/blog/articles/post-a64c35eb.html"><small>上一篇</small><span>分库分表中间件的高可用实践</span></a><a href="/blog/articles/mvcc-for-update-6ea5409f.html"><small>下一篇</small><span>日常问题排查-MVCC和for update混用导致读数据不一致</span></a></nav>
+  </article>
+  <aside class="article-related">
+    <h2>同类文章</h2><a href="/blog/articles/ntp-8613284a.html">ntp导致的时钟回拨</a>
+<a href="/blog/articles/post-d9d326ca.html">产线内存&quot;耗尽&quot;</a>
+  </aside>
+</main>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, securityLevel: "loose" });
+</script>
+</body>
+</html>

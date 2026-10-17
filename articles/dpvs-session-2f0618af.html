@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="DPVS是一款爱奇艺开源的基于DPDK的优秀软件(https://github.com/iqiyi/dpvs)。利用DPDK工作在用户空间的特性，相比于内核空间的LVS,我们可以使用用户空间的一系列工具/中间件等完成很多在内核空间很难完成的功能。 虽然笔者日常工作中是搞Java中间件开发的，但一直都...">
+  <title>给DPVS加上SESSION同步功能 - 苍天环绕的小世界</title>
+  <link rel="stylesheet" href="/blog/assets/site.css?v=20261007-contact-page">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="/blog/">苍天环绕的小世界</a>
+  <nav><a href="/blog/">首页</a><a class="nav-featured" href="/blog/featured.html">精品阅读</a><a href="/blog/#articles">文章</a><a href="/blog/contact.html">联系我</a></nav>
+</header>
+<main class="article-layout">
+  <aside class="article-aside">
+    <a class="back-link" href="/blog/">返回首页</a>
+    <div class="toc"><h2>目录</h2><a class="toc-level-1" href="#%E7%BB%99dpvs%E5%8A%A0%E4%B8%8Asession%E5%90%8C%E6%AD%A5%E5%8A%9F%E8%83%BD">给DPVS加上SESSION同步功能</a>
+<a class="toc-level-2" href="#%E5%89%8D%E8%A8%80">前言</a>
+<a class="toc-level-2" href="#just-for-fun">Just for fun</a>
+<a class="toc-level-2" href="#dpvs">DPVS</a>
+<a class="toc-level-3" href="#%E6%B2%A1%E6%9C%89session%E5%90%8C%E6%AD%A5%E5%8A%9F%E8%83%BD%E4%BC%9A%E5%A6%82%E4%BD%95">没有SESSION同步功能会如何</a>
+<a class="toc-level-3" href="#%E5%A6%82%E6%9E%9Csession%E5%90%8C%E6%AD%A5%E4%BC%9A%E5%A6%82%E4%BD%95">如果SESSION同步会如何</a>
+<a class="toc-level-3" href="#session%E5%90%8C%E6%AD%A5%E6%96%B9%E6%B3%95">SESSION同步方法</a>
+<a class="toc-level-3" href="#%E5%A6%82%E6%9E%9C%E5%B7%A5%E4%BD%9C%E5%9C%A8%E5%86%85%E6%A0%B8%E6%80%81%E7%9A%84lvs%E5%A6%82%E4%BD%95%E5%90%8C%E6%AD%A5">如果工作在内核态的LVS如何同步</a>
+<a class="toc-level-3" href="#%E5%9C%A8%E7%94%A8%E6%88%B7%E6%80%81%E7%AC%94%E8%80%85%E9%87%87%E7%94%A8redis-pub-sub%E5%90%8C%E6%AD%A5">在用户态笔者采用Redis Pub/Sub同步</a>
+<a class="toc-level-2" href="#session%E5%90%8C%E6%AD%A5%E5%B7%A5%E4%BD%9C%E7%BA%BF%E7%A8%8B">SESSION同步工作线程</a>
+<a class="toc-level-3" href="#%E7%BA%BF%E7%A8%8B%E9%97%B4%E9%80%9A%E4%BF%A1">线程间通信</a>
+<a class="toc-level-3" href="#mq%E6%B6%88%E8%B4%B9%E9%87%8D%E6%94%BE">MQ消费重放</a>
+<a class="toc-level-2" href="#%E9%81%87%E5%88%B0%E7%9A%84%E5%B0%8F%E5%9D%91">遇到的小坑</a>
+<a class="toc-level-3" href="#%E4%B8%8D%E8%B6%B3%E4%B9%8B%E5%A4%84">不足之处</a>
+<a class="toc-level-2" href="#%E6%80%BB%E7%BB%93">总结</a></div>
+  </aside>
+  <article class="article">
+    <header class="article-title">
+      <div class="meta"><span>自己动手系列</span><time>2020.08.27</time><span>4 min read</span></div>
+      <h1>给DPVS加上SESSION同步功能</h1>
+      <p>DPVS是一款爱奇艺开源的基于DPDK的优秀软件(https://github.com/iqiyi/dpvs)。利用DPDK工作在用户空间的特性，相比于内核空间的LVS,我们可以使用用户空间的一系列工具/中间件等完成很多在内核空间很难完成的功能。 虽然笔者日常工作中是搞Java中间件开发的，但一直都...</p>
+    </header>
+    <div class="prose"><h1 id="%E7%BB%99dpvs%E5%8A%A0%E4%B8%8Asession%E5%90%8C%E6%AD%A5%E5%8A%9F%E8%83%BD">给DPVS加上SESSION同步功能</h1>
+<h2 id="%E5%89%8D%E8%A8%80">前言</h2>
+<p>DPVS是一款爱奇艺开源的基于DPDK的优秀软件(https://github.com/iqiyi/dpvs)。利用DPDK工作在用户空间的特性，相比于内核空间的LVS,我们可以使用用户空间的一系列工具/中间件等完成很多在内核空间很难完成的功能。</p>
+<h2 id="just-for-fun">Just for fun</h2>
+<p>虽然笔者日常工作中是搞Java中间件开发的，但一直都对底层技术尤其是在网络层面抱有很大的激情与好奇心。偶然接触到DPDK这个用户态数据平面开发套件,看了其官方文档和源码后，不禁技痒难耐，于是就尝试在DPVS上增加一个Session同步功能。虽然和工作关系不大，但搞技术的乐趣不就在于不停的折腾么,Just For Fun!当然，由于精力原因，只是写出了原型并测试成功，距离生产环境还有很大的距离，毕竟不靠这个吃饭^_^。</p>
+<h2 id="dpvs">DPVS</h2>
+<p>DPVS事实上就是一个负载均衡软件，源于LVS，我们常说的Virtual IP(VIP)就可以使用DPVS来支持，如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/dpvs_session/dpvs_session.png" alt="codegen" loading="lazy"></p>
+<p>这次笔者就是在DPVS在FullNAT模式下对于主从模式增加了Session同步功能。如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/dpvs_session/session_sync.png" alt="codegen" loading="lazy"></p>
+<h3 id="%E6%B2%A1%E6%9C%89session%E5%90%8C%E6%AD%A5%E5%8A%9F%E8%83%BD%E4%BC%9A%E5%A6%82%E4%BD%95">没有SESSION同步功能会如何</h3>
+<p>由于DPVS的数据转发是通过内部的session表来分发数据包的,如果没有Session同步功能,那么对应的数据库由于找不到对应的Session进而被丢弃。如果Client端是通过tcp进行连接的话:</p>
+<p class="image-only"><img src="/blog/assets/source/image/dpvs_session/tcp_base_dpvs.png" alt="codegen" loading="lazy"></p>
+<p>那么将会在配置的tcp重传超时之后报错。</p>
+<p class="image-only"><img src="/blog/assets/source/image/dpvs_session/session_not_sync.png" alt="codegen" loading="lazy"></p>
+<h4 id="tcp-client-realserver">TCP Client RealServer</h4>
+<p class="image-only"><img src="/blog/assets/source/image/dpvs_session/session_not_sync.png" alt="codegen" loading="lazy"></p>
+<h3 id="%E5%A6%82%E6%9E%9Csession%E5%90%8C%E6%AD%A5%E4%BC%9A%E5%A6%82%E4%BD%95">如果SESSION同步会如何</h3>
+<p class="image-only"><img src="/blog/assets/source/image/dpvs_session/session_has_sync.png" alt="codegen" loading="lazy"></p>
+<p>如果Session同步后，由于新晋升的DPVS2 Master依旧能够知道将这个Packet发送到后面哪台RealServer，如果是采用TCP连接的话，在一次重传之后，依旧能够保证连接的稳定。</p>
+<h3 id="session%E5%90%8C%E6%AD%A5%E6%96%B9%E6%B3%95">SESSION同步方法</h3>
+<p>笔者这次尝试的是主从模式下FullNat的Session同步,事实上只需要将FullNat下的两张Session表(Session_IN和Session_OUT)从Master同步到Slave即可。</p>
+<p class="image-only"><img src="/blog/assets/source/image/dpvs_session/session_in_out_table.png" alt="codegen" loading="lazy"></p>
+<h3 id="%E5%A6%82%E6%9E%9C%E5%B7%A5%E4%BD%9C%E5%9C%A8%E5%86%85%E6%A0%B8%E6%80%81%E7%9A%84lvs%E5%A6%82%E4%BD%95%E5%90%8C%E6%AD%A5">如果工作在内核态的LVS如何同步</h3>
+<p>由于LVS这一类的软件工作在内核态，那么就需要使用比较复杂且难于调试的问题进行主从之间的通信，如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/dpvs_session/session_sync_in_kernel.png" alt="codegen" loading="lazy"></p>
+<p>内核态的调试由于比起用户态来说相对复杂,而且没什么好用的中间件，笔者就没有做这方面的尝试。</p>
+<h3 id="%E5%9C%A8%E7%94%A8%E6%88%B7%E6%80%81%E7%AC%94%E8%80%85%E9%87%87%E7%94%A8redis-pub-sub%E5%90%8C%E6%AD%A5">在用户态笔者采用Redis Pub/Sub同步</h3>
+<p>而在用户态，可用的工具就太多了,于是笔者就选择了使用Redis的订阅/发布(Pub/Sub)功能将Session表信息从Master同步到Slave,如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/dpvs_session/dpvs_session_sync_redis.png" alt="codegen" loading="lazy"></p>
+<p>由于FullNat采用五元组，所以笔者在Redis中Pub的Key为:</p>
+<pre><code class="language-">session_key_(af协议簇)
+			 _(proto协议)
+			 _(client源地址)
+			 _(client端口号)
+			 _(vip地址)
+			 _(vip端口号)
+			 _(localIP)
+			 _(localPort)
+			 _(RealServer目的地址)
+			 _(RS目的端口号)
+			 _(当前session所在CPUID)</code></pre>
+<h2 id="session%E5%90%8C%E6%AD%A5%E5%B7%A5%E4%BD%9C%E7%BA%BF%E7%A8%8B">SESSION同步工作线程</h2>
+<p>首先，笔者在DPVS启动的main函数除了DPVS的线程之外用pthread新建了两个线程，用于reids的Send(Pub)和Receive(Sub)。</p>
+<p class="image-only"><img src="/blog/assets/source/image/dpvs_session/session_sync_thread.png" alt="codegen" loading="lazy"></p>
+<h3 id="%E7%BA%BF%E7%A8%8B%E9%97%B4%E9%80%9A%E4%BF%A1">线程间通信</h3>
+<h4 id="%E5%8F%91%E5%B8%83%E4%BF%A1%E6%81%AF%E5%88%B0redis">发布信息到Redis</h4>
+<p>DPDK线程与Send/Recv线程间，同时ring_buffer进行通信。所以一开始创建的时候，就给每个DPDK线程创建了一个rte_ring(session_rings)。当每有新建连接动作时候，DPDK线程就会将新建连接的动作封装成一个消息扔到里面，然后由SendPub线程去消费。如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/dpvs_session/session_enqueue.png" alt="codegen" loading="lazy"></p>
+<p>由于ring_buffer是有限的，可能出现消息丢失的现象。 新建连接的DPVS运行栈为:</p>
+<pre><code class="language-">__dp_vs_in
+	|-&gt;conn_sched
+		|-&gt;tcp_conn_sched (tcp协议)
+			/* only TCP-SYN without other flag can be scheduled */
+			/* 即只有TCP-SYN包才会走新建连接的逻辑 */
+			|-&gt;dp_vs_schedule
+				|-&gt;dp_vs_snat_schedule (FullNAT模式)
+					</code></pre>
+<p>在最终的dp_vs_snat_schedule代码中，加入一段代码:</p>
+<pre><code class="language-">static struct dp_vs_conn *dp_vs_snat_schedule(......)
+{
+	conn = dp_vs_conn_new(mbuf,iph,&amp;param,dest,0);
+	......
+	// 加入把conn信息放入session_buffer的逻辑
+	session_info_enqueue(conn);
+	return conn;
+}</code></pre>
+<p>放入逻辑，其实就是将conn的信息组装成一个sesion_msg结构体，然后将之前session_key的9个信息从conn中提取:</p>
+<pre><code class="language-">void session_info_enqueue(struct dp_vs_conn* conn){
+	......
+	int cid = rte_lcore_id();
+	struct session_msg* msg;
+	if(rte_mempool_get(message_pool,(void**)&amp;msg) &lt; 0){
+		......
+		return;
+	}
+	copy_conn_to_msg(conn,msg);
+	if(rte_ring_enqueue(session_rings[cid],msg) != 0){
+		...
+		rete_mempool_put(message_pool,msg);
+		return;
+	}
+}</code></pre>
+<h4 id="%E4%BB%8Eredis%E8%AE%A2%E9%98%85%E6%B6%88%E6%81%AF">从Redis订阅消息</h4>
+<p>同样的，有一个Recv(Sub)线程从Redis订阅信息，然后Recv(Sub)线程和DPDK间的线程也用ring_buffer来同步，不过另用了一个session_subscribe_buffer。</p>
+<p class="image-only"><img src="/blog/assets/source/image/dpvs_session/redis_session_sub.png" alt="codegen" loading="lazy"></p>
+<p>如图中所示，从Redis订阅到信息之后，将消息重新塞到session_subscribe_buffer(每个线程都有)里面。然后利用DPVS的job回调方法在每个线程中处理subscribe消息并通过此消息重建session表:</p>
+<pre><code class="language-">lcore_job_recv_fwd
+	|-&gt;lcore_process_session_subscribe_ring
+
+void lcore_process_session_subscribe_ring(...){
+	struct rte_ring* ring = session_subscribe_rings[cid];
+	...
+	struct session_msg* msg;
+	if(rte_ring_dequeue(ring,(void**)&amp;msg) &lt; 0){
+		return;
+	}
+	new_dpvs_conn(msg);
+	rte_mempool_put(message_pool,msg);
+}</code></pre>
+<p>笔者在new_dpvs_conn里面做了FullNAT的两张session表同步操作。</p>
+<pre><code class="language-">void dp_vs_conn_new_from_session(struct session_msg* msg){
+	......
+	/*init inbound conn tuple hash*/
+	// SESSION IN 表项构建
+	t-&gt;af = msg-&gt;af;
+	t-&gt;proto = msg-&gt;proto;
+	......
+	/*init outbound conn tuple hash*/
+	// SESSION OUT 表项构建
+	new-&gt;af = msg-&gt;af;
+	new-&gt;proto = msg-&gt;proto;
+	......
+	// 绑定dest
+	err = dp_vs_conn_bind_dest(new,dest);
+	......
+	// 绑定hash表
+	dp_vs_conn_hash(new);
+}	</code></pre>
+<h3 id="mq%E6%B6%88%E8%B4%B9%E9%87%8D%E6%94%BE">MQ消费重放</h3>
+<p>用Redis做Pub/Sub只是笔者为了保持编码简单而做的选择。如果正式用在产线,笔者觉得还是要把这种Session发到Kafka这种queue里面，那么就可以将Session的变化落到本地。这样，在主备都宕机的情况下，可以通过消费Kafka中已有的消息重建Session表。</p>
+<p class="image-only"><img src="/blog/assets/source/image/dpvs_session/dpvs_queue.png" alt="codegen" loading="lazy"></p>
+<h2 id="%E9%81%87%E5%88%B0%E7%9A%84%E5%B0%8F%E5%9D%91">遇到的小坑</h2>
+<p>在笔者进行测试的时候，遇到的一个问题时，在Session同步之后，虽然Session表项同步无误，但始终tcp连接被断开，在加了各种Print判断和TCP dump了一堆之后。才发现，DPVS本身会对TCP的sequence进行重写以增加toa字段，所以导致TCP sequence对不上，进而连接被断开。为了简单起见，笔者注掉了这段代码，然后终于成功了！</p>
+<pre><code class="language-">static int tcp_fnat_in_handle(...)
+{
+	struct tcphdr *th;
+	......
+	// tcp_in_add_toa(conn,mbuf,th);
+	// tcp_in_adjust_seq(conn,th);
+	th-&gt;source = conn-&gt;lport;
+	th-&gt;dest = conn-&gt;dport;
+	
+	return tcp_send_csum(af,iphdrlen,th,conn,mbuf);
+}
+</code></pre>
+<h3 id="%E4%B8%8D%E8%B6%B3%E4%B9%8B%E5%A4%84">不足之处</h3>
+<p>当前笔者只做了Session新建动作的同步，Session删除等其它动作还需要慢慢斟酌。 另外，由于时间精力所限，笔者对DPVS的编码只相当于做了一次简单的原型验证，还远远达不到产线高可用的要求。 不过，当测试成功，Master宕机后另一台Slave立马接上后，长连接(用的MySQL Client做测试)保持不断,查询数据依旧丝滑,仿佛什么都没发生过的时候(如果没有这个功能，只能坐等25s左右的卡主超时了,tcp_retries2=5)，就感觉非常的有成就感！</p>
+<h2 id="%E6%80%BB%E7%BB%93">总结</h2>
+<p>笔者爱折腾、喜欢做有挑战的事。笔者在玩只狼的时候,在挑战蝴蝶夫人70多次败北终于成功后，那种喜悦难以言喻。这次玩DPVS也一样，在Debug了大半天之后，终于成功的感觉和只狼如出一辙，这也是我乐此不疲的原因,Just For Fun! 关注笔者公众号,获取更多干货文章:</p>
+<p class="image-only"><img src="/blog/assets/source/image/remote/oscimg.oschina.net/up-03e8bdd592b3eb9dec0a50fa5ff56192df0-528d3d1f58d8.jpeg" alt="" loading="lazy"></p>
+<p class="image-only"><img src="/blog/assets/source/image/dpvs_session/zhilang.jpeg" alt="codegen" loading="lazy"></p></div>
+    <nav class="prev-next"><a href="/blog/articles/dubbo-af6bf6dd.html"><small>上一篇</small><span>用隧道协议实现不同dubbo集群间的透明通信</span></a><a href="/blog/articles/socket-d81c1e8d.html"><small>下一篇</small><span>网络编程里的socket</span></a></nav>
+  </article>
+  <aside class="article-related">
+    <h2>同类文章</h2><a href="/blog/articles/dubbo-af6bf6dd.html">用隧道协议实现不同dubbo集群间的透明通信</a>
+<a href="/blog/articles/sql-64ebb2ab.html">自己动手写SQL执行引擎</a>
+<a href="/blog/articles/post-a64c35eb.html">分库分表中间件的高可用实践</a>
+<a href="/blog/articles/c-dbproxy-d9da67e9.html">用C语言撸了个DBProxy</a>
+<a href="/blog/articles/sql-3e4ea183.html">自己动手写SQL查询引擎-总篇</a>
+<a href="/blog/articles/mysql-79d92f6a.html">MySql之自动同步表结构</a>
+<a href="/blog/articles/mysql-crud-929680b4.html">MySql之自动生成CRUD代码</a>
+  </aside>
+</main>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, securityLevel: "loose" });
+</script>
+</body>
+</html>

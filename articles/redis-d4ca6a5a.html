@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="核心反常点：系统失去响应并伴随 Full GC 告警，看起来像 JVM 内存问题，但根因是 Redis 使用方式把应用拖进阻塞和内存压力。">
+  <title>日常问题排查-系统失去响应-Redis使用不当 - 苍天环绕的小世界</title>
+  <link rel="stylesheet" href="/blog/assets/site.css?v=20261007-contact-page">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="/blog/">苍天环绕的小世界</a>
+  <nav><a href="/blog/">首页</a><a class="nav-featured" href="/blog/featured.html">精品阅读</a><a href="/blog/#articles">文章</a><a href="/blog/contact.html">联系我</a></nav>
+</header>
+<main class="article-layout">
+  <aside class="article-aside">
+    <a class="back-link" href="/blog/">返回首页</a>
+    <div class="toc"><h2>目录</h2><a class="toc-level-1" href="#%E6%97%A5%E5%B8%B8%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5-%E7%B3%BB%E7%BB%9F%E5%A4%B1%E5%8E%BB%E5%93%8D%E5%BA%94-redis%E4%BD%BF%E7%94%A8%E4%B8%8D%E5%BD%93">日常问题排查-系统失去响应-Redis使用不当</a>
+<a class="toc-level-2" href="#%E5%89%8D%E8%A8%80">前言</a>
+<a class="toc-level-2" href="#bug%E7%8E%B0%E5%9C%BA">Bug现场</a>
+<a class="toc-level-2" href="#%E7%9C%8B%E5%9F%BA%E7%A1%80%E7%9B%91%E6%8E%A7">看基础监控</a>
+<a class="toc-level-2" href="#%E7%9C%8B%E5%BA%94%E7%94%A8%E7%9B%91%E6%8E%A7">看应用监控</a>
+<a class="toc-level-2" href="#jstack">jstack</a>
+<a class="toc-level-2" href="#%E7%9C%8B%E4%B8%8Bredis%E6%83%85%E5%86%B5">看下redis情况</a>
+<a class="toc-level-2" href="#redis%E8%BF%9E%E6%8E%A5%E6%B3%84%E9%9C%B2">Redis连接泄露</a>
+<a class="toc-level-2" href="#%E5%A6%82%E4%BD%95%E5%8C%BA%E5%88%86">如何区分</a>
+<a class="toc-level-2" href="#%E5%8F%AF%E8%BE%BE%E6%80%A7%E5%88%86%E6%9E%90">可达性分析</a>
+<a class="toc-level-3" href="#%E9%A6%96%E5%85%88%E6%89%BE%E5%88%B0redisconn">首先找到RedisConn</a>
+<a class="toc-level-2" href="#%E5%A6%82%E6%9E%9C%E6%98%AF%E6%83%85%E5%86%B51%E5%A6%82%E4%BD%95%E5%AE%9A%E4%BD%8D%E5%8D%A1%E4%BD%8F%E7%9A%84%E4%BB%A3%E7%A0%81">如果是情况1如何定位卡住的代码</a>
+<a class="toc-level-2" href="#%E6%80%BB%E7%BB%93">总结</a></div>
+  </aside>
+  <article class="article">
+    <header class="article-title">
+      <div class="meta"><span>日常问题排查</span><time>2021.05.19</time><span>3 min read</span></div>
+      <h1>日常问题排查-系统失去响应-Redis使用不当</h1>
+      <p>核心反常点：系统失去响应并伴随 Full GC 告警，看起来像 JVM 内存问题，但根因是 Redis 使用方式把应用拖进阻塞和内存压力。</p>
+    </header>
+    <div class="prose"><h1 id="%E6%97%A5%E5%B8%B8%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5-%E7%B3%BB%E7%BB%9F%E5%A4%B1%E5%8E%BB%E5%93%8D%E5%BA%94-redis%E4%BD%BF%E7%94%A8%E4%B8%8D%E5%BD%93">日常问题排查-系统失去响应-Redis使用不当</h1>
+<h2 id="%E5%89%8D%E8%A8%80">前言</h2>
+<p>日常问题排查系列都是一些简单问题排查，笔者将在这里介绍一些排查Bug的简单技巧，同时顺便积累素材^_^。</p>
+<h2 id="bug%E7%8E%B0%E5%9C%BA">Bug现场</h2>
+<p>开发反应线上系统出现失去响应的现象，收到业务告警已经频繁MarkAndSweep(Full GC)告警。于是找到笔者进行排查。</p>
+<h2 id="%E7%9C%8B%E5%9F%BA%E7%A1%80%E7%9B%91%E6%8E%A7">看基础监控</h2>
+<p>首先呢，当然是看我们的监控了，找到对应失去响应的系统的ip，看下我们的基础监控。</p>
+<p class="image-only"><img src="/blog/assets/source/image/daily_bug/redis_request/memory_monitor.png" alt="codegen" loading="lazy"></p>
+<p>机器内存持续上升。因为我们是java系统，堆的大小一开始已经设置了最大值。</p>
+<pre><code class="language-">--XX:Xms2g -Xmx2g</code></pre>
+<p>所以看上去像堆外内存泄露。而FullGC告警只是堆外内存后一些关联堆内对象触发。</p>
+<h2 id="%E7%9C%8B%E5%BA%94%E7%94%A8%E7%9B%91%E6%8E%A7">看应用监控</h2>
+<p>第二步，当然就是观察我们的应用监控，这边笔者用的是CAT。观察Cat中对应应用的情况，很容易发现，其ActiveThread呈现不正常的现象，竟然达到了5000+多个，同时和内存上升曲线保持一致。</p>
+<p class="image-only"><img src="/blog/assets/source/image/daily_bug/redis_request/active_thread.png" alt="codegen" loading="lazy"></p>
+<h2 id="jstack">jstack</h2>
+<p>java应用中遇到线程数过多的现象，首先我们考虑的是jstack，jstack出来对应的文件后。我们less一下，发现很多线程卡在下面的代码栈上。</p>
+<pre><code class="language-">&quot;Thread-1234
+	java.lang.Thread.State: WAITING (parking)
+		at sun.misc.Unsafe.park
+		......
+		at org.apache.commons.pool2.impl.LinkedBlockingQueue.takeFirst
+		......
+		at redis.clients.util.Pool.getResource</code></pre>
+<p>很明显的，这个代码栈值得是没有获取连接，从而卡住。至于为什么卡这么长时间而不释放，肯定是由于没设置超时时间。那么是否大部分线程都卡在这里呢，这里我们做一下统计。</p>
+<pre><code class="language-">cat jstack.txt | grep &#x27;prio=&#x27; | wc -l 
+======&gt; 5648
+cat jstack.txt | grep &#x27;redis.clients.util.Pool.getResource&#x27; 
+======&gt; 5242</code></pre>
+<p>可以看到，一共5648个线程，有5242，也就是92%的线程卡在Redis getResource中。</p>
+<h2 id="%E7%9C%8B%E4%B8%8Bredis%E6%83%85%E5%86%B5">看下redis情况</h2>
+<pre><code class="language-">netstat -anp | grep 6379 
+tcp 0 0 1.2.3.4:111 3.4.5.6:6379 ESTABLISHED
+......</code></pre>
+<p>一共5个，而且连接状态为ESTABLISHED，正常。由此可见他们配置的最大连接数是5(因为别的线程正在得到获取Redis资源)。</p>
+<h2 id="redis%E8%BF%9E%E6%8E%A5%E6%B3%84%E9%9C%B2">Redis连接泄露</h2>
+<p>那么很自然的想到，Redis连接泄露了，即应用获得Redis连接后没有还回去。这种泄露有下面几种可能: 情况1:</p>
+<p class="image-only"><img src="/blog/assets/source/image/daily_bug/redis_request/situation1.png" alt="codegen" loading="lazy"></p>
+<p>情况2:</p>
+<p class="image-only"><img src="/blog/assets/source/image/daily_bug/redis_request/situation2.png" alt="codegen" loading="lazy"></p>
+<p>情况3： 调用Redis卡住，由于其它机器是好的，故排除这种情况。</p>
+<h2 id="%E5%A6%82%E4%BD%95%E5%8C%BA%E5%88%86">如何区分</h2>
+<p>我们做个简单的推理: 如果是情况1，那么这个RedisConn肯定可以通过内存可达性分析和Thread关联上，而且这个关联关系肯定会关联到某个业务操作实体(例如code stack or 业务bean)。那么我们只要观察其在堆内的关联路线是否和业务相关即可,如果没有任何关联，那么基本断定是情况2了。</p>
+<h2 id="%E5%8F%AF%E8%BE%BE%E6%80%A7%E5%88%86%E6%9E%90">可达性分析</h2>
+<p>我们可以通过jmap dump出应用内存，然后通过MAT(Memory Analysis Tool)来进行可达性分析。</p>
+<h3 id="%E9%A6%96%E5%85%88%E6%89%BE%E5%88%B0redisconn">首先找到RedisConn</h3>
+<p>将dump文件在MAT中打开，然后运行OQL:</p>
+<pre><code class="language-">select * from redis.clients.jedis.Jedis (RedisConn的实体类)</code></pre>
+<p>搜索到一堆Jedis类，然后我们执行</p>
+<pre><code class="language-">Path To GCRoots-&gt;with all references</code></pre>
+<p>可以看到如下结果:</p>
+<pre><code class="language-">redis.clients.jedis.Jedis
+	|-&gt;object 
+		|-&gt;item
+			|-&gt;first
+				|-&gt;...
+					|-&gt;java.util.TimerThread
+				|-&gt;internalPool</code></pre>
+<p>由此可见，我们的连接仅仅被TimerThread和internalPool(Jedis本身的连接池)持有。所以我们可以判断出大概率是情况2，即忘了归还连接。翻看业务代码:</p>
+<pre><code class="language-">伪代码
+void lock(){
+	conn = jedis.getResource()
+	conn.setNx()
+	// 结束,此处应该有finally{returnResource()}或者采用RedisTemplate
+}</code></pre>
+<p>最后就是很简单的，业务开发在执行setNx操作后，忘了将连接还回去。导致连接泄露。</p>
+<h2 id="%E5%A6%82%E6%9E%9C%E6%98%AF%E6%83%85%E5%86%B51%E5%A6%82%E4%BD%95%E5%AE%9A%E4%BD%8D%E5%8D%A1%E4%BD%8F%E7%9A%84%E4%BB%A3%E7%A0%81">如果是情况1如何定位卡住的代码</h2>
+<p>到此为止，这个问题时解决了。但是如果是情况1的话，我们又该如何分析下去呢？很简单，我们如果找到了jedis被哪个业务线程拥有，直接从heap dump找到其线程号，然后取Jstack中搜索即可知道其卡住的代码栈。</p>
+<pre><code class="language-">jmap:
+redis.clients.jedis.Jedis
+	|-&gt;Thread-123
+
+jstack:
+
+Thread-123 prio=...
+	at xxx.xxx.xxx.blocked
+</code></pre>
+<h2 id="%E6%80%BB%E7%BB%93">总结</h2>
+<p>这是一个很简单的问题，知道套路之后排查起来完全不费事。虽然最后排查出来是个很低级的代码，但是这种分析方法值得借鉴。</p></div>
+    <nav class="prev-next"><a href="/blog/articles/post-ce618c61.html"><small>上一篇</small><span>日常问题排查-空闲一段时间再请求就超时</span></a><a href="/blog/articles/post-e443a4a8.html"><small>下一篇</small><span>日常问题排查-请求偶尔超时-磁盘故障</span></a></nav>
+  </article>
+  <aside class="article-related">
+    <h2>同类文章</h2><a href="/blog/articles/younggc-84c79a21.html">日常问题排查-Younggc突然变长</a>
+<a href="/blog/articles/post-ce618c61.html">日常问题排查-空闲一段时间再请求就超时</a>
+<a href="/blog/articles/dns-5b7836f2.html">日常问题排查-奇怪的DNS</a>
+<a href="/blog/articles/post-a12062b0.html">日常问题排查-偶发性读数据不一致</a>
+<a href="/blog/articles/mvcc-for-update-6ea5409f.html">日常问题排查-MVCC和for update混用导致读数据不一致</a>
+<a href="/blog/articles/post-0abe94ca.html">日常问题排查-改表时读数据不一致</a>
+<a href="/blog/articles/post-df9748ee.html">日常问题排查-连接突然全部关闭</a>
+<a href="/blog/articles/post-625093a1.html">日常问题排查-集群逐步失去响应</a>
+<a href="/blog/articles/mq-a6fe4c2d.html">日常问题排查-mq不消费</a>
+<a href="/blog/articles/post-aba46ada.html">日常问题排查-读从库没有原子性？</a>
+<a href="/blog/articles/post-e443a4a8.html">日常问题排查-请求偶尔超时-磁盘故障</a>
+<a href="/blog/articles/post-ff1bd808.html">日常问题排查-调用超时</a>
+<a href="/blog/articles/cpu-busy-5-7a232df0.html">日常问题排查-同应用同流量，为什么CPU.busy差了 5 倍？</a>
+  </aside>
+</main>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, securityLevel: "loose" });
+</script>
+</body>
+</html>

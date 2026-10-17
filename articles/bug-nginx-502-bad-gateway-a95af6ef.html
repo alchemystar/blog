@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="核心反常点：后端应用压测无压力，但经过 Nginx 就 502 且 Nginx CPU 接近 100%，真正瓶颈不是业务处理能力，而是单 upstream 地址端口耗尽与 TIME_WAIT。">
+  <title>解Bug之路-Nginx 502 Bad Gateway - 苍天环绕的小世界</title>
+  <link rel="stylesheet" href="/blog/assets/site.css?v=20261007-contact-page">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="/blog/">苍天环绕的小世界</a>
+  <nav><a href="/blog/">首页</a><a class="nav-featured" href="/blog/featured.html">精品阅读</a><a href="/blog/#articles">文章</a><a href="/blog/contact.html">联系我</a></nav>
+</header>
+<main class="article-layout">
+  <aside class="article-aside">
+    <a class="back-link" href="/blog/">返回首页</a>
+    <div class="toc"><h2>目录</h2><a class="toc-level-1" href="#%E8%A7%A3bug%E4%B9%8B%E8%B7%AF-nginx-502-bad-gateway">解Bug之路-Nginx 502 Bad Gateway</a>
+<a class="toc-level-2" href="#%E5%89%8D%E8%A8%80">前言</a>
+<a class="toc-level-2" href="#bug%E7%8E%B0%E5%9C%BA">Bug现场</a>
+<a class="toc-level-2" href="#%E7%BD%91%E5%85%B3%E7%9A%84%E6%83%85%E5%86%B5">网关的情况</a>
+<a class="toc-level-2" href="#nginx%E6%89%80%E5%9C%A8%E6%9C%BA%E5%99%A8cpu%E5%88%A9%E7%94%A8%E7%8E%87%E6%8E%A5%E8%BF%91100">Nginx所在机器CPU利用率接近100%</a>
+<a class="toc-level-2" href="#%E5%8E%BB%E6%8E%89nginx%E7%9B%B4%E6%8E%A5%E9%80%9A%E4%BF%A1%E6%AF%AB%E6%97%A0%E5%8E%8B%E5%8A%9B">去掉Nginx直接通信毫无压力</a>
+<a class="toc-level-2" href="#%E5%8E%BBnginx%E4%B8%8A%E7%9C%8B%E4%B8%8B%E6%97%A5%E5%BF%97">去Nginx上看下日志</a>
+<a class="toc-level-2" href="#%E4%B8%BA%E4%BB%80%E4%B9%88nginx%E7%9A%84cpu%E6%98%AF100">为什么Nginx的CPU是100%</a>
+<a class="toc-level-2" href="#%E4%B8%BA%E4%BB%80%E4%B9%88gateway1%E8%B0%83%E7%94%A8nginx%E6%B2%A1%E6%9C%89%E9%97%AE%E9%A2%98">为什么Gateway1调用Nginx没有问题</a>
+<a class="toc-level-2" href="#nginx-%E5%90%8E%E9%9D%A2%E6%9C%89%E5%A4%9A%E5%8F%B0%E6%9C%BA%E5%99%A8%E7%9A%84%E8%AF%9D">Nginx 后面有多台机器的话</a>
+<a class="toc-level-2" href="#%E6%8A%8A%E7%AB%AF%E5%8F%A3%E5%8F%B7%E8%8C%83%E5%9B%B4%E8%B0%83%E5%A4%A7">把端口号范围调大</a>
+<a class="toc-level-2" href="#%E5%BC%80%E5%90%AFtcp-tw-reuse">开启tcp_tw_reuse</a>
+<a class="toc-level-2" href="#%E4%B8%8D%E8%A6%81%E5%BC%80%E5%90%AFtcp-tw-recycle">不要开启tcp_tw_recycle</a>
+<a class="toc-level-1" href="#nginx-upstream%E6%94%B9%E6%88%90%E9%95%BF%E8%BF%9E%E6%8E%A5">Nginx upstream改成长连接</a>
+<a class="toc-level-1" href="#%E7%94%B1%E6%AD%A4%E4%BA%A7%E7%94%9F%E7%9A%84%E9%A3%8E%E9%99%A9%E7%82%B9">由此产生的风险点</a>
+<a class="toc-level-1" href="#%E6%80%BB%E7%BB%93">总结</a></div>
+  </aside>
+  <article class="article">
+    <header class="article-title">
+      <div class="meta"><span>解Bug之路</span><time>2020.07.25</time><span>6 min read</span></div>
+      <h1>解Bug之路-Nginx 502 Bad Gateway</h1>
+      <p>核心反常点：后端应用压测无压力，但经过 Nginx 就 502 且 Nginx CPU 接近 100%，真正瓶颈不是业务处理能力，而是单 upstream 地址端口耗尽与 TIME_WAIT。</p>
+    </header>
+    <div class="prose"><h1 id="%E8%A7%A3bug%E4%B9%8B%E8%B7%AF-nginx-502-bad-gateway">解Bug之路-Nginx 502 Bad Gateway</h1>
+<h2 id="%E5%89%8D%E8%A8%80">前言</h2>
+<p>事实证明，读过Linux内核源码确实有很大的好处，尤其在处理问题的时刻。当你看到报错的那一瞬间，就能把现象/原因/以及解决方案一股脑的在脑中闪现。甚至一些边边角角的现象都能很快的反应过来是为何。笔者读过一些Linux TCP协议栈的源码，就在解决下面这个问题的时候有一种非常流畅的感觉。</p>
+<h2 id="bug%E7%8E%B0%E5%9C%BA">Bug现场</h2>
+<p>首先，这个问题其实并不难解决，但是这个问题引发的现象倒是挺有意思。先描述一下现象吧， 笔者要对自研的dubbo协议隧道网关进行压测(这个网关的设计也挺有意思，准备放到后面的博客里面)。先看下压测的拓扑吧:</p>
+<p class="image-only"><img src="/blog/assets/source/image/nginx502/topology.png" alt="codegen" loading="lazy"></p>
+<p>为了压测笔者gateway的单机性能，两端仅仅各保留一台网关，即gateway1和gateway2。压到一定程度就开始报错，导致压测停止。很自然的就想到，网关扛不住了。</p>
+<h2 id="%E7%BD%91%E5%85%B3%E7%9A%84%E6%83%85%E5%86%B5">网关的情况</h2>
+<p>去Gateway2的机器上看了一下，没有任何报错。而Gateway1则有大量的502报错。502是Bad Gateway，Nginx的经典报错，首先想到的就是Gateway2不堪重负被Nginx在upstream中踢掉。</p>
+<p class="image-only"><img src="/blog/assets/source/image/nginx502/nginx_kick_gateway2.png" alt="codegen" loading="lazy"></p>
+<p>那么，就先看看Gateway2的负载情况把，查了下监控，发现Gateway2在4核8G的机器上只用了一个核，完全看不出来有瓶颈的样子，难道是IO有问题？看了下小的可怜的网卡流量打消了这个猜想。</p>
+<h2 id="nginx%E6%89%80%E5%9C%A8%E6%9C%BA%E5%99%A8cpu%E5%88%A9%E7%94%A8%E7%8E%87%E6%8E%A5%E8%BF%91100">Nginx所在机器CPU利用率接近100%</h2>
+<p>这时候，发现一个有意思的现象,Nginx确用满了CPU!</p>
+<p class="image-only"><img src="/blog/assets/source/image/nginx502/cpu_high.png" alt="codegen" loading="lazy"></p>
+<p>再次压测，去Nginx所在机器上top了一下，发现Nginx的4个Worker分别占了一个核把CPU吃满-_-!</p>
+<p class="image-only"><img src="/blog/assets/source/image/nginx502/worker_full_cpu.png" alt="codegen" loading="lazy"></p>
+<p>什么，号称性能强悍的Nginx竟然这么弱，说好的事件驱动\epoll边沿触发\纯C打造的呢？一定是用的姿势不对！</p>
+<h2 id="%E5%8E%BB%E6%8E%89nginx%E7%9B%B4%E6%8E%A5%E9%80%9A%E4%BF%A1%E6%AF%AB%E6%97%A0%E5%8E%8B%E5%8A%9B">去掉Nginx直接通信毫无压力</h2>
+<p>既然猜测是Nginx的瓶颈,就把Nginx去掉吧。Gateway1和Gateway2直连，压测TPS里面就飙升了，而且Gateway2的CPU最多也就吃了2个核，毫无压力。</p>
+<p class="image-only"><img src="/blog/assets/source/image/nginx502/no_nginx_okay.png" alt="codegen" loading="lazy"></p>
+<h2 id="%E5%8E%BBnginx%E4%B8%8A%E7%9C%8B%E4%B8%8B%E6%97%A5%E5%BF%97">去Nginx上看下日志</h2>
+<p>由于Nginx机器权限并不在笔者手上，所以一开始没有关注其日志，现在就联系一下对应的运维去看一下吧。在accesslog里面发现了大量的502报错，确实是Nginx的。又看了下错误日志，发现有大量的</p>
+<pre><code class="language-">Cannot assign requested address</code></pre>
+<p>由于笔者读过TCP源码，一瞬间就反应过来，是端口号耗尽了！由于Nginx upstream和后端Backend默认是短连接，所以在大量请求流量进来的时候回产生大量TIME_WAIT的连接。</p>
+<p class="image-only"><img src="/blog/assets/source/image/nginx502/nginx_short_client.png" alt="codegen" loading="lazy"></p>
+<p>而这些TIME_WAIT是占据端口号的，而且基本要1分钟左右才能被Kernel回收。</p>
+<p class="image-only"><img src="/blog/assets/source/image/tcp_connect/port_exhaust.png" alt="codegen" loading="lazy"></p>
+<pre><code class="language-">cat /proc/sys/net/ipv4/ip_local_port_range
+32768	61000</code></pre>
+<p>也就是说，只要一分钟之内产生28232(61000-32768)个TIME_WAIT的socket就会造成端口号耗尽，也即470.5TPS(28232/60),只是一个很容易达到的压测值。事实上这个限制是Client端的,Server端没有这样的限制，因为Server端口号只有一个8080这样的有名端口号。而在 upstream中Nginx扮演的就是Client,而Gateway2就扮演的是Nginx</p>
+<p class="image-only"><img src="/blog/assets/source/image/nginx502/nginx_client_gateway2_server.png" alt="codegen" loading="lazy"></p>
+<h2 id="%E4%B8%BA%E4%BB%80%E4%B9%88nginx%E7%9A%84cpu%E6%98%AF100">为什么Nginx的CPU是100%</h2>
+<p>而笔者也很快想明白了Nginx为什么吃满了机器的CPU,问题就出来端口号的搜索过程。</p>
+<p class="image-only"><img src="/blog/assets/source/image/tcp_connect/search_port.png" alt="codegen" loading="lazy"></p>
+<p>让我们看下最耗性能的一段函数:</p>
+<pre><code class="language-">int __inet_hash_connect(...)
+{
+		// 注意，这边是static变量
+		static u32 hint;
+		// hint有助于不从0开始搜索，而是从下一个待分配的端口号搜索
+		u32 offset = hint + port_offset;
+		.....
+		inet_get_local_port_range(&amp;low, &amp;high);
+		// 这边remaining就是61000 - 32768
+		remaining = (high - low) + 1
+		......
+		for (i = 1; i &lt;= remaining; i++) {
+			port = low + (i + offset) % remaining;
+			/* port是否占用check */
+			....
+			goto ok;
+		}
+		.......
+ok:
+		hint += i;
+		......
+}</code></pre>
+<p>看上面那段代码，如果一直没有端口号可用的话，则需要循环remaining次才能宣告端口号耗尽，也就是28232次。而如果按照正常的情况，因为有hint的存在，所以每次搜索从下一个待分配的端口号开始计算，以个位数的搜索就能找到端口号。如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/tcp_connect/port_search_compare.png" alt="codegen" loading="lazy"></p>
+<p>所以当端口号耗尽后，Nginx的Worker进程就沉浸在上述for循环中不可自拔，把CPU吃满。</p>
+<p class="image-only"><img src="/blog/assets/source/image/tcp_connect/worker_search_full.png" alt="codegen" loading="lazy"></p>
+<h2 id="%E4%B8%BA%E4%BB%80%E4%B9%88gateway1%E8%B0%83%E7%94%A8nginx%E6%B2%A1%E6%9C%89%E9%97%AE%E9%A2%98">为什么Gateway1调用Nginx没有问题</h2>
+<p>很简单，因为笔者在Gateway1调用Nginx的时候设置了Keepalived，所以采用的是长连接，就没有这个端口号耗尽的限制。</p>
+<p class="image-only"><img src="/blog/assets/source/image/nginx502/Gateway1_Okay.png" alt="codegen" loading="lazy"></p>
+<h2 id="nginx-%E5%90%8E%E9%9D%A2%E6%9C%89%E5%A4%9A%E5%8F%B0%E6%9C%BA%E5%99%A8%E7%9A%84%E8%AF%9D">Nginx 后面有多台机器的话</h2>
+<p>由于是因为端口号搜索导致CPU 100%,而且但凡有可用端口号，因为hint的原因，搜索次数可能就是1和28232的区别。</p>
+<p class="image-only"><img src="/blog/assets/source/image/nginx502/nginx_edge.png" alt="codegen" loading="lazy"></p>
+<p>因为端口号限制是针对某个特定的远端server:port的。 所以，只要Nginx的Backend有多台机器，甚至同一个机器上的多个不同端口号，只要不超过临界点，Nginx就不会有任何压力。</p>
+<p class="image-only"><img src="/blog/assets/source/image/nginx502/Nginx_no_pressure.png" alt="codegen" loading="lazy"></p>
+<h2 id="%E6%8A%8A%E7%AB%AF%E5%8F%A3%E5%8F%B7%E8%8C%83%E5%9B%B4%E8%B0%83%E5%A4%A7">把端口号范围调大</h2>
+<p>比较无脑的方案当然是把端口号范围调大，这样就能抗更多的TIME_WAIT。同时将tcp_max_tw_bucket调小，tcp_max_tw_bucket是kernel中最多存在的TIME_WAIT数量，只要port范围 - tcp_max_tw_bucket大于一定的值，那么就始终有port端口可用，这样就可以避免再次到调大临界值得时候继续击穿临界点。</p>
+<pre><code class="language-">cat /proc/sys/net/ipv4/ip_local_port_range
+22768	61000
+cat /proc/sys/net/ipv4/tcp_max_tw_buckets
+20000</code></pre>
+<h2 id="%E5%BC%80%E5%90%AFtcp-tw-reuse">开启tcp_tw_reuse</h2>
+<p>这个问题Linux其实早就有了解决方案，那就是tcp_tw_reuse这个参数。</p>
+<pre><code class="language-">echo &#x27;1&#x27; &gt; /proc/sys/net/ipv4/tcp_tw_reuse</code></pre>
+<p>事实上TIME_WAIT过多的原因是其回收时间竟然需要1min，这个1min其实是TCP协议中规定的2MSL时间，而Linux中就固定为1min。</p>
+<pre><code class="language-">#define TCP_TIMEWAIT_LEN (60*HZ) /* how long to wait to destroy TIME-WAIT
+				  * state, about 60 seconds	*/</code></pre>
+<p>2MSL的原因就是排除网络上还残留的包对新的同样的五元组的Socket产生影响，也就是说在2MSL(1min)之内重用这个五元组会有风险。为了解决这个问题，Linux就采取了一些列措施防止这样的情况，使得在大部分情况下1s之内的TIME_WAIT就可以重用。下面这段代码，就是检测此TIME_WAIT是否重用。</p>
+<pre><code class="language-">__inet_hash_connect
+	|-&gt;__inet_check_established
+static int __inet_check_established(......)
+{
+	......	
+	/* Check TIME-WAIT sockets first. */
+	sk_nulls_for_each(sk2, node, &amp;head-&gt;twchain) {
+		tw = inet_twsk(sk2);
+		// 如果在time_wait中找到一个match的port,就判断是否可重用
+		if (INET_TW_MATCH(sk2, net, hash, acookie,
+					saddr, daddr, ports, dif)) {
+			if (twsk_unique(sk, sk2, twp))
+				goto unique;
+			else
+				goto not_unique;
+		}
+	}
+	......
+}</code></pre>
+<p>而其中的核心函数就是twsk_unique，它的判断逻辑如下:</p>
+<pre><code class="language-">int tcp_twsk_unique(......)
+{
+	......
+	if (tcptw-&gt;tw_ts_recent_stamp &amp;&amp;
+	    (twp == NULL || (sysctl_tcp_tw_reuse &amp;&amp;
+			     get_seconds() - tcptw-&gt;tw_ts_recent_stamp &gt; 1))) {
+       // 对write_seq设置为snd_nxt+65536+2
+       // 这样能够确保在数据传输速率&lt;=80Mbit/s的情况下不会被回绕      
+		tp-&gt;write_seq = tcptw-&gt;tw_snd_nxt + 65535 + 2
+		......
+		return 1;
+	}
+	return 0;	
+}</code></pre>
+<p>上面这段代码逻辑如下所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/tcp_connect/tcp_tw_reuse.png" alt="codegen" loading="lazy"></p>
+<p>在开启了tcp_timestamp以及tcp_tw_reuse的情况下,在Connect搜索port时只要比之前用这个port的TIME_WAIT状态的Socket记录的最近时间戳&gt;1s,就可以重用此port,即将之前的1分钟缩短到1s。同时为了防止潜在的序列号冲突，直接将write_seq加上在65537,这样，在单Socket传输速率小于80Mbit/s的情况下，不会造成序列号重叠(冲突)。 同时这个tw_ts_recent_stamp设置的时机如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/tcp_connect/recent_timestamp.png" alt="codegen" loading="lazy"></p>
+<p>所以如果Socket进入TIME_WAIT状态后，如果一直有对应的包发过来，那么会影响此TIME_WAIT对应的port是否可用的时间。 开启了这个参数之后,由于从1min缩短到1s,那么Nginx单台对单Upstream可承受的TPS就从原来的470.5TPS(28232/60)一跃提升为28232TPS，增长了60倍。 如果还嫌性能不够，可以配上上面的端口号范围调大以及tcp_max_tw_bucket调小继续提升tps,不过tcp_max_tw_bucket调小可能会有序列号重叠的风险，毕竟Socket不经过2MSL阶段就被重用了。</p>
+<h2 id="%E4%B8%8D%E8%A6%81%E5%BC%80%E5%90%AFtcp-tw-recycle">不要开启tcp_tw_recycle</h2>
+<p>开启tcp_tw_recyle这个参数会在NAT环境下造成很大的影响，建议不开启，具体见笔者的另一篇博客:</p>
+<pre><code class="language-">https://my.oschina.net/alchemystar/blog/3119992</code></pre>
+<h1 id="nginx-upstream%E6%94%B9%E6%88%90%E9%95%BF%E8%BF%9E%E6%8E%A5">Nginx upstream改成长连接</h1>
+<p>事实上，上面的一系列问题都是由于Nginx对Backend是长连接导致。 Nginx从 1.1.4 开始，实现了对后端机器的长连接支持功能。在Upstream中这样配置可以开启长连接的功能:</p>
+<pre><code class="language-">upstream backend {
+    server 127.0.0.1:8080;
+    keepalive 32; # 后端长连接数量
+    keepalive_timeout 30s; # 设置后端连接的最大idle时间为30s
+}</code></pre>
+<p>这样前端和后端都是长连接，大家又可以愉快的玩耍了。</p>
+<p class="image-only"><img src="/blog/assets/source/image/tcp_connect/gateway1_gateway2_long_conn.png" alt="codegen" loading="lazy"></p>
+<h1 id="%E7%94%B1%E6%AD%A4%E4%BA%A7%E7%94%9F%E7%9A%84%E9%A3%8E%E9%99%A9%E7%82%B9">由此产生的风险点</h1>
+<p>由于对单个远端ip:port耗尽会导致CPU吃满这种现象。所以在Nginx在配置Upstream时候需要格外小心。假设一种情况，PE扩容了一台Nginx,为防止有问题，就先配一台Backend看看情况，这时候如果量比较大的话击穿临界点就会造成大量报错(而应用本身确毫无压力，毕竟临界值是470.5TPS(28232/60))，甚至在同Nginx上的非此域名的请求也会因为CPU被耗尽而得不到响应。多配几台Backend/开启tcp_tw_reuse或许是不错的选择。</p>
+<h1 id="%E6%80%BB%E7%BB%93">总结</h1>
+<p>应用再强大也还是承载在内核之上，始终逃不出Linux内核的樊笼。所以对于Linux内核本身参数的调优还是非常有意义的。如果读过一些内核源码，无疑对我们排查线上问题有着很大的助力，同时也能指导我们避过一些坑！</p></div>
+    <nav class="prev-next"><a href="/blog/articles/bug-nat-e95e7827.html"><small>上一篇</small><span>解Bug之路-NAT引发的性能瓶颈</span></a><a href="/blog/articles/bug-tcp-7829e7d8.html"><small>下一篇</small><span>解Bug之路-TCP使用不当</span></a></nav>
+  </article>
+  <aside class="article-related">
+    <h2>同类文章</h2><a href="/blog/articles/bug-nat-e95e7827.html">解Bug之路-NAT引发的性能瓶颈</a>
+<a href="/blog/articles/bug-key-c35d61ac.html">解Bug之路-隔离故障点后业务不恢复?-热点Key处理与亚稳态故障</a>
+<a href="/blog/articles/bug-with-ai-909a31ae.html">解Bug之路-with AI-应用被限流？</a>
+<a href="/blog/articles/bug-999-3fc4d0f3.html">解Bug之路-应用999线升高</a>
+<a href="/blog/articles/bug-mysql-seconds-behind-master-f91a1925.html">解Bug之路-MySQL-Seconds_behind_master精度问题引发的思考</a>
+<a href="/blog/articles/bug-zookeeper-1b26955c.html">解Bug之路-ZooKeeper集群拒绝服务</a>
+<a href="/blog/articles/bug-9ac0cd85.html">解Bug之路-主从切换&quot;未成功&quot;?</a>
+<a href="/blog/articles/bug-tcp-bug-d2a0b4b0.html">解Bug之路-TCP使用不当引起的Bug</a>
+<a href="/blog/articles/bug-6995f45c.html">解Bug之路-记一次线上请求偶尔变慢的排查</a>
+<a href="/blog/articles/bug-sql-64530c9f.html">解Bug之路-中间件&quot;SQL重复执行&quot;</a>
+<a href="/blog/articles/bug-c0b96e67.html">解Bug之路-记一次调用外网服务概率性失败问题的排查</a>
+<a href="/blog/articles/bug-9db7e3e3.html">解Bug之路-记一次存储故障的排查过程</a>
+<a href="/blog/articles/bug-dubbo-zookeeper-29ed9784.html">解Bug之路-dubbo应用无法重连zookeeper</a>
+<a href="/blog/articles/bug-dubbo-cac59f88.html">解Bug之路-dubbo流量上线时的非平滑问题</a>
+<a href="/blog/articles/bug-sql-f1e2ba02.html">解Bug之路-记一次中间件导致的慢SQL排查过程</a>
+<a href="/blog/articles/bug-kernel-tcp-caa0286b.html">解Bug之路-记一次对端kernel宕机后的tcp行为</a>
+<a href="/blog/a
+  &lt;/aside&gt;
+&lt;/main&gt;
+
+&lt;script type=" module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, securityLevel: "loose" });
+</script>
+</body>
+</html>

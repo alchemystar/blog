@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="在开发过程中，由于频繁的修改数据库的字段，导致rd和qa环境的数据库表经常不一致。 而由于这些修改数据库的操作可能由多个rd操作,很难一次性收集全。人手工去和QA环境对字段又特别繁琐，容易遗漏。 于是笔者就写了一个能够自动比较两个数据库的表结构，并生成alter语句的程序。同时还可以进行配置从而自动...">
+  <title>MySql之自动同步表结构 - 苍天环绕的小世界</title>
+  <link rel="stylesheet" href="/blog/assets/site.css?v=20261007-contact-page">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="/blog/">苍天环绕的小世界</a>
+  <nav><a href="/blog/">首页</a><a class="nav-featured" href="/blog/featured.html">精品阅读</a><a href="/blog/#articles">文章</a><a href="/blog/contact.html">联系我</a></nav>
+</header>
+<main class="article-layout">
+  <aside class="article-aside">
+    <a class="back-link" href="/blog/">返回首页</a>
+    <div class="toc"><h2>目录</h2><a class="toc-level-1" href="#mysql%E4%B9%8B%E8%87%AA%E5%8A%A8%E5%90%8C%E6%AD%A5%E8%A1%A8%E7%BB%93%E6%9E%84">MySql之自动同步表结构</a>
+<a class="toc-level-2" href="#%E5%BC%80%E5%8F%91%E7%97%9B%E7%82%B9">开发痛点</a>
+<a class="toc-level-2" href="#%E8%A7%A3%E5%86%B3%E4%B9%8B%E9%81%93">解决之道</a>
+<a class="toc-level-2" href="#%E5%8E%9F%E7%90%86">原理</a>
+<a class="toc-level-3" href="#%E5%90%8C%E6%AD%A5%E6%96%B0%E5%A2%9E%E7%9A%84%E8%A1%A8">同步新增的表</a>
+<a class="toc-level-3" href="#%E5%90%8C%E6%AD%A5%E8%A1%A8%E7%BB%93%E6%9E%84">同步表结构</a>
+<a class="toc-level-3" href="#%E5%90%8C%E6%AD%A5%E7%B4%A2%E5%BC%95%E7%BB%93%E6%9E%84">同步索引结构</a>
+<a class="toc-level-3" href="#%E9%85%8D%E7%BD%AE">配置</a>
+<a class="toc-level-3" href="#%E8%BF%90%E8%A1%8C">运行</a>
+<a class="toc-level-3" href="#%E7%94%9F%E6%88%90%E6%95%88%E6%9E%9C%E5%B1%95%E7%A4%BA">生成效果展示</a>
+<a class="toc-level-2" href="#github%E9%93%BE%E6%8E%A5">github链接</a></div>
+  </aside>
+  <article class="article">
+    <header class="article-title">
+      <div class="meta"><span>自己动手系列</span><time>2017.03.14</time><span>1 min read</span></div>
+      <h1>MySql之自动同步表结构</h1>
+      <p>在开发过程中，由于频繁的修改数据库的字段，导致rd和qa环境的数据库表经常不一致。 而由于这些修改数据库的操作可能由多个rd操作,很难一次性收集全。人手工去和QA环境对字段又特别繁琐，容易遗漏。 于是笔者就写了一个能够自动比较两个数据库的表结构，并生成alter语句的程序。同时还可以进行配置从而自动...</p>
+    </header>
+    <div class="prose"><h1 id="mysql%E4%B9%8B%E8%87%AA%E5%8A%A8%E5%90%8C%E6%AD%A5%E8%A1%A8%E7%BB%93%E6%9E%84">MySql之自动同步表结构</h1>
+<h2 id="%E5%BC%80%E5%8F%91%E7%97%9B%E7%82%B9">开发痛点</h2>
+<p>在开发过程中，由于频繁的修改数据库的字段，导致rd和qa环境的数据库表经常不一致。 而由于这些修改数据库的操作可能由多个rd操作,很难一次性收集全。人手工去和QA环境对字段又特别繁琐，容易遗漏。</p>
+<h2 id="%E8%A7%A3%E5%86%B3%E4%B9%8B%E9%81%93">解决之道</h2>
+<p>于是笔者就写了一个能够自动比较两个数据库的表结构，并生成alter语句的程序。同时还可以进行配置从而自动这行这些alter语句。详情见github</p>
+<h2 id="%E5%8E%9F%E7%90%86">原理</h2>
+<h3 id="%E5%90%8C%E6%AD%A5%E6%96%B0%E5%A2%9E%E7%9A%84%E8%A1%A8">同步新增的表</h3>
+<p>如果rd环境新增的表，而qa环境没有，此程序可以直接输出create table语句。原理如下:</p>
+<p class="image-only"><img src="/blog/assets/source/image/lancer/addtable.png" alt="codegen" loading="lazy"></p>
+<p>用到的sql主要有:</p>
+<pre><code class="language-">show table from rd_db;
+show create table added_table_name;</code></pre>
+<h3 id="%E5%90%8C%E6%AD%A5%E8%A1%A8%E7%BB%93%E6%9E%84">同步表结构</h3>
+<p>如果rd表结构有改动，而qa环境没有，此程序可以直接输出alter语句，原理如下: 理如下:</p>
+<p class="image-only"><img src="/blog/assets/source/image/lancer/synctable.png" alt="codegen" loading="lazy"></p>
+<p>用到的sql有:</p>
+<pre><code class="language-">select 
+	COLUMN_NAME,COLUMN_TYPE,IS_NULLABLE,COLUMN_DEFAULT,COLUMN_COMMENT,EXTRA 
+from 
+	information_schema.columns
+where 
+ 	TABLE_SCHEMA=&#x27;rd_db&#x27;
+ 	and TABLE_NAME = &#x27;rd_table&#x27;;</code></pre>
+<p>比较表结构的代码:</p>
+<pre><code class="language-">        for (Column column : sourceTable.getColumns().values()) {
+            if (targetTable.getColumns().get(column.getName()) == null) {
+                // 如果对应的target没有这个字段,直接alter
+                String sql = &quot;alter table &quot; + target.getSchema() + &quot;.&quot; + targetTable.getTableName() + &quot; add &quot; + column
+                        .getName() + &quot; &quot;;
+                sql += column.getType() + &quot; &quot;;
+                if (column.getIsNull().equals(&quot;NO&quot;)) {
+                    sql += &quot;NOT NULL &quot;;
+                } else {
+                    sql += &quot;NULL &quot;;
+                }
+                if (column.getDefaultValue() != null) {
+                    sql += &quot;DEFAULT &quot; + SqlUtil.getDbString(column.getDefaultValue()) + &quot; &quot;;
+                }
+                if (column.getComment() != null) {
+                    sql += &quot;COMMENT &quot; + SqlUtil.getDbString(column.getComment()) + &quot; &quot;;
+                }
+                if (after != null) {
+                    sql += &quot;after &quot; + after;
+                }
+                changeSql.add(sql+&quot;;&quot;);
+            } else {
+                // 检查对应的source 和 target的属性
+                String sql =
+                        &quot;alter table &quot; + target.getSchema() + &quot;.&quot; + targetTable.getTableName() + &quot; change &quot; + column
+                                .getName() + &quot; &quot;;
+                Column sourceColumn = column;
+                Column targetColumn = targetTable.getColumns().get(sourceColumn.getName());
+                // 比较两者字段,如果返回null,表明一致
+                String sqlExtend = compareSingleColumn(sourceColumn, targetColumn);
+                if (sqlExtend != null) {
+                    changeSql.add(sql + sqlExtend+&quot;;&quot;);
+                }
+            }
+            after = column.getName();
+        }</code></pre>
+<h3 id="%E5%90%8C%E6%AD%A5%E7%B4%A2%E5%BC%95%E7%BB%93%E6%9E%84">同步索引结构</h3>
+<p>如果rd表的索引有盖顶，而qa环境没有，此程序可以直接输出修改索引语句。原理和上面类似，在此不再赘述。</p>
+<h3 id="%E9%85%8D%E7%BD%AE">配置</h3>
+<pre><code class="language-">sourceHost=127.0.0.1:3306
+sourceUser=root
+sourcePass=123123123
+sourceSchema=mystique_db
+sourceCharset=utf8
+
+targetHost=127.0.0.1:3306
+targetUser=root
+targetPass=123123123
+targetSchema=mystique_test
+targetCharset=utf8
+
+autoExecute=YES //此处表明自动同步</code></pre>
+<h3 id="%E8%BF%90%E8%A1%8C">运行</h3>
+<p>按照上面的模板进行配置 用IDE打开，找到</p>
+<pre><code class="language-">alchemystar.runner.ShellRunner </code></pre>
+<p>运行其中的main方法即可</p>
+<h3 id="%E7%94%9F%E6%88%90%E6%95%88%E6%9E%9C%E5%B1%95%E7%A4%BA">生成效果展示</h3>
+<pre><code class="language-">alter table mystique_test.t_test_3 change id id bigint(20) NOT NULL AUTO_INCREMENT COMMENT &#x27;&#x27;
+alter table mystique_test.t_test_3 add index (name)
+alter table mystique_test.t_test_3 drop index name_id
+alter table mystique_test.t_test_3 add id_2 varchar(50) NULL DEFAULT &#x27;&#x27; COMMENT &#x27;&#x27; after name</code></pre>
+<p>如果打开了自动执行，会自动执行这些语句</p>
+<h2 id="github%E9%93%BE%E6%8E%A5">github链接</h2>
+<p>https://github.com/alchemystar/Lancer</p></div>
+    <nav class="prev-next"><a href="/blog/articles/mysql-6961acfc.html"><small>上一篇</small><span>MySql-两阶段加锁协议</span></a><a href="/blog/articles/mysql-crud-929680b4.html"><small>下一篇</small><span>MySql之自动生成CRUD代码</span></a></nav>
+  </article>
+  <aside class="article-related">
+    <h2>同类文章</h2><a href="/blog/articles/dubbo-af6bf6dd.html">用隧道协议实现不同dubbo集群间的透明通信</a>
+<a href="/blog/articles/dpvs-session-2f0618af.html">给DPVS加上SESSION同步功能</a>
+<a href="/blog/articles/sql-64ebb2ab.html">自己动手写SQL执行引擎</a>
+<a href="/blog/articles/post-a64c35eb.html">分库分表中间件的高可用实践</a>
+<a href="/blog/articles/c-dbproxy-d9da67e9.html">用C语言撸了个DBProxy</a>
+<a href="/blog/articles/sql-3e4ea183.html">自己动手写SQL查询引擎-总篇</a>
+<a href="/blog/articles/mysql-crud-929680b4.html">MySql之自动生成CRUD代码</a>
+  </aside>
+</main>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, securityLevel: "loose" });
+</script>
+</body>
+</html>

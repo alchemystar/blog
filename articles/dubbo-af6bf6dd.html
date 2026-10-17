@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="笔者最近完成了一个非常有意思的隧道机制(已在产线运行)，可以让注册到不同zookeeper之间的dubbo集群之间能够正常进行通信。如下图所示: 例如图中A/B两个网络隔离的集群，两者只能通过专线进行通信。但是对于在里面的应用来说，调用另外一个集群的dubbo服务(例如app1调用app3)依旧和原...">
+  <title>用隧道协议实现不同dubbo集群间的透明通信 - 苍天环绕的小世界</title>
+  <link rel="stylesheet" href="/blog/assets/site.css?v=20261007-contact-page">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="/blog/">苍天环绕的小世界</a>
+  <nav><a href="/blog/">首页</a><a class="nav-featured" href="/blog/featured.html">精品阅读</a><a href="/blog/#articles">文章</a><a href="/blog/contact.html">联系我</a></nav>
+</header>
+<main class="article-layout">
+  <aside class="article-aside">
+    <a class="back-link" href="/blog/">返回首页</a>
+    <div class="toc"><h2>目录</h2><a class="toc-level-1" href="#%E7%94%A8%E9%9A%A7%E9%81%93%E5%8D%8F%E8%AE%AE%E5%AE%9E%E7%8E%B0%E4%B8%8D%E5%90%8Cdubbo%E9%9B%86%E7%BE%A4%E9%97%B4%E7%9A%84%E9%80%8F%E6%98%8E%E9%80%9A%E4%BF%A1">用隧道协议实现不同dubbo集群间的透明通信</a>
+<a class="toc-level-2" href="#%E5%89%8D%E8%A8%80">前言</a>
+<a class="toc-level-2" href="#%E5%9C%BA%E6%99%AF">场景</a>
+<a class="toc-level-3" href="#%E6%96%B0%E5%BB%BA%E6%9C%BA%E6%88%BF">新建机房</a>
+<a class="toc-level-3" href="#%E6%96%B0%E5%BB%BA%E4%B8%9A%E5%8A%A1%E5%8D%95%E5%85%83">新建业务单元</a>
+<a class="toc-level-3" href="#%E6%95%85%E9%9A%9C%E9%9A%94%E7%A6%BB">故障隔离</a>
+<a class="toc-level-2" href="#%E9%9A%A7%E9%81%93%E6%9C%BA%E5%88%B6">隧道机制</a>
+<a class="toc-level-3" href="#%E9%9A%A7%E9%81%93%E7%A9%BF%E9%80%8F">隧道穿透</a>
+<a class="toc-level-3" href="#%E9%9A%A7%E9%81%93%E5%AE%9E%E7%8E%B0">隧道实现</a>
+<a class="toc-level-2" href="#%E5%A6%82%E4%BD%95%E5%8F%91%E7%8E%B0%E8%BF%99%E4%B8%AA%E7%BD%91%E5%85%B3">如何发现这个网关</a>
+<a class="toc-level-2" href="#%E7%BD%91%E5%85%B3%E5%92%8C%E7%BD%91%E5%85%B3%E4%B9%8B%E9%97%B4%E9%80%9A%E8%BF%87http%E9%80%9A%E4%BF%A1">网关和网关之间通过http通信</a>
+<a class="toc-level-2" href="#%E8%BF%94%E5%9B%9E%E5%80%BC%E4%B9%9F%E9%80%9A%E8%BF%87%E9%9A%A7%E9%81%93%E6%9C%BA%E5%88%B6">返回值也通过隧道机制</a>
+<a class="toc-level-2" href="#%E5%AF%B9dubbo%E8%BF%9B%E8%A1%8C%E6%89%A9%E5%B1%95">对dubbo进行扩展</a>
+<a class="toc-level-2" href="#%E9%9A%A7%E9%81%93%E7%BD%91%E5%85%B3%E7%9A%84%E6%8E%A5%E5%8F%A3%E5%8F%91%E7%8E%B0">隧道网关的接口发现</a>
+<a class="toc-level-2" href="#dubbo%E9%9B%86%E7%BE%A4%E7%9A%84%E5%8F%91%E7%8E%B0">dubbo集群的发现</a>
+<a class="toc-level-2" href="#%E6%80%A7%E8%83%BD">性能</a>
+<a class="toc-level-2" href="#%E6%80%BB%E7%BB%93">总结</a></div>
+  </aside>
+  <article class="article">
+    <header class="article-title">
+      <div class="meta"><span>自己动手系列</span><time>2021.01.12</time><span>5 min read</span></div>
+      <h1>用隧道协议实现不同dubbo集群间的透明通信</h1>
+      <p>笔者最近完成了一个非常有意思的隧道机制(已在产线运行)，可以让注册到不同zookeeper之间的dubbo集群之间能够正常进行通信。如下图所示: 例如图中A/B两个网络隔离的集群，两者只能通过专线进行通信。但是对于在里面的应用来说，调用另外一个集群的dubbo服务(例如app1调用app3)依旧和原...</p>
+    </header>
+    <div class="prose"><h1 id="%E7%94%A8%E9%9A%A7%E9%81%93%E5%8D%8F%E8%AE%AE%E5%AE%9E%E7%8E%B0%E4%B8%8D%E5%90%8Cdubbo%E9%9B%86%E7%BE%A4%E9%97%B4%E7%9A%84%E9%80%8F%E6%98%8E%E9%80%9A%E4%BF%A1">用隧道协议实现不同dubbo集群间的透明通信</h1>
+<h2 id="%E5%89%8D%E8%A8%80">前言</h2>
+<p>笔者最近完成了一个非常有意思的隧道机制(已在产线运行)，可以让注册到不同zookeeper之间的dubbo集群之间能够正常进行通信。如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/zone_blog/zone_transparent.png" alt="codegen" loading="lazy"></p>
+<p>例如图中A/B两个网络隔离的集群，两者只能通过专线进行通信。但是对于在里面的应用来说，调用另外一个集群的dubbo服务(例如app1调用app3)依旧和原来的方式一模一样，无需做任何修改。这个特性对于新建单元(机房),业务网络隔离等场景非常有用。 本文就稍稍聊一下这个机制。</p>
+<h2 id="%E5%9C%BA%E6%99%AF">场景</h2>
+<p>这个dubbo集群通信机制，可被用在下面的场景中。</p>
+<h3 id="%E6%96%B0%E5%BB%BA%E6%9C%BA%E6%88%BF">新建机房</h3>
+<p>在我们新建一个机房的过程中。正常情况下，需要将一整条链路的所有应用以及相关设施全部部署到新的机房中。如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/zone_blog/new_unit.png" alt="codegen" loading="lazy"></p>
+<p>而在笔者新的机制中，如果本集群没有对应的接口，会去寻找有对应接口的集群，就算其中缺失了一些系统，整个机房依旧能够work，将新建机房变为可迭代式的。大幅度减少了新建机房的复杂性。</p>
+<h3 id="%E6%96%B0%E5%BB%BA%E4%B8%9A%E5%8A%A1%E5%8D%95%E5%85%83">新建业务单元</h3>
+<p>由于单机房机架位的限制或者一些其它原因，有一些业务希望剥离到一个单独的单元(机房里面)。但是业务确需要一大堆原来单元的基础服务。而不同单元之间的网络又无法打通(安全性要求)。</p>
+<p class="image-only"><img src="/blog/assets/source/image/zone_blog/A_B_Basic.png" alt="codegen" loading="lazy"></p>
+<p>如果按照传统的模式，势必要对业务系统做改造，例如建立一个业务网关来负责和基础系统的通信，这个网关明显费时费力而且没什么技术含量，例如在业务代码中将dubbo调用强行转换为对业务网关的http调用,如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/zone_blog/business_change.png" alt="codegen" loading="lazy"></p>
+<p>而且，每增加一个接口调用，都得在业务网关中转换一把，添加对应的接口包，然后发布。这样的网关维护起来肯定是个天坑！随着日益严格的安全性要求，不同业务间的网络隔离要求会与日俱增。 笔者是搞中间件的，坚信做的基础服务能够对业务透明，让其感知不到才是一个好的设计。一旦需要业务大量配合这种由基础架构变更而引起的改造，无疑是非常的不友好，甚至是个失败的设计。</p>
+<h3 id="%E6%95%85%E9%9A%9C%E9%9A%94%E7%A6%BB">故障隔离</h3>
+<p>事实上，笔者搞这一套隧道机制的初衷还有很大一部分原因是故障隔离。例如，笔者遇到数次由于业务系统使用zookeeper不当，往zookeeper写了一大堆数据，从而让整个集群陷入不可用的风险。而新的机制，可以让不同的业务注册到不同的zookeeper,zookeeper挂了，也只是这个业务宕了，其它业务则不受影响。</p>
+<p class="image-only"><img src="/blog/assets/source/image/zone_blog/seperate.png" alt="codegen" loading="lazy"></p>
+<p>事实上不仅为zookeeper,由于笔者对消息(例如activemq)也做了这一套类似的隧道机制。使得我们的整个业务能够更好的进行故障隔离！</p>
+<h2 id="%E9%9A%A7%E9%81%93%E6%9C%BA%E5%88%B6">隧道机制</h2>
+<p>笔者这个机制的最大便利性在于对业务的侵入性很少。对于基础集群的应用甚至完全不需要做修改。为了达成这个需求，笔者引入了在网络上非常常用的隧道概念(Tunnel),这个大家可能平时都接触过，VPN/Vxlan这些网络协议都用了隧道。</p>
+<h3 id="%E9%9A%A7%E9%81%93%E7%A9%BF%E9%80%8F">隧道穿透</h3>
+<p>我们先来看一下最基本的原理，在系统A通过Dubbo调用系统B的时候，在同一个集群中走的是dubbo协议。而跨集群的时候，笔者将dubbo原始比特流承载在http协议上，在专线上发出去。</p>
+<p class="image-only"><img src="/blog/assets/source/image/zone_blog/http_tunnel.png" alt="codegen" loading="lazy"></p>
+<p>由于在B系统看来，接收到的都是相同的byte流，其无法(也不用)区分到底是走了一层专线还是直接调用。所以B系统无需更改任何代码。</p>
+<h3 id="%E9%9A%A7%E9%81%93%E5%AE%9E%E7%8E%B0">隧道实现</h3>
+<p>那么，这个隧道具体是如何实现，系统A又是如何知道需要本集群没有对应的接口，需要通过http隧道调用到另一个集群的呢?这就引入了我们的隧道网关。</p>
+<p class="image-only"><img src="/blog/assets/source/image/zone_blog/default_gateway.png" alt="codegen" loading="lazy"></p>
+<p>这里的概念也是和网络上的默认网关类似，如果本集群内找不到对应的接受者就投递到一个默认的网关，由这个隧道网关来替我们传递调用。</p>
+<h2 id="%E5%A6%82%E4%BD%95%E5%8F%91%E7%8E%B0%E8%BF%99%E4%B8%AA%E7%BD%91%E5%85%B3">如何发现这个网关</h2>
+<p>为了充分利用dubbo接口的注册发现机制，笔者将隧道网关也暴露为一个dubbo接口，其输入和输出分别如下所示:</p>
+<pre><code class="language-">// 隧道网关接口请求体
+class TunnelInterfaceReq {
+	// dubbo元信息，例如具体调用接口信息
+	MetaData dubbo
+	// 原始请求A调用序列化后的比特流
+	byte[] body;
+}
+// 隧道网关接口返回体
+class TunnelInterfaceResp{
+	// dubbo元信息
+	MetaData dubbo
+	// 返回值调用序列化后的比特流，又另一个集群的对应系统返回
+	byte[] resp;
+}
+</code></pre>
+<p>有了这个dubbo接口，我们就可以很容易的将数据传送给默认网关了。</p>
+<p class="image-only"><img src="/blog/assets/source/image/zone_blog/app_invoke_gateway.png" alt="codegen" loading="lazy"></p>
+<p>注意，这里其实也是做了一层隧道协议，即用dubbo协议承载dubbo协议，用这种类似套娃的方法有效的利用了dubbo本身的注册发现机制。</p>
+<h2 id="%E7%BD%91%E5%85%B3%E5%92%8C%E7%BD%91%E5%85%B3%E4%B9%8B%E9%97%B4%E9%80%9A%E8%BF%87http%E9%80%9A%E4%BF%A1">网关和网关之间通过http通信</h2>
+<p>由于不同集群之间通过专线进行通信，所以笔者采用了http通信来进行。在App1的请求到达隧道网关后，网关会将原始body比特流从TunnelInterfaceRequest中取出。然后放到一个http的请求中进行传递。如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/zone_blog/http_tunnel_gateway.png" alt="codegen" loading="lazy"></p>
+<p>值得注意的是，由于传递的是byte流，没有携带任何业务信息(例如类型信息等),所以我们的隧道网关可以对任意dubbo请求进行隧道传输，而不像传统的网关那样需要添加各种业务对应的jar包并不停发布-_-! 在图中，投递到另一端的隧道网关后，其从http协议中取出调用元信息和原始调用byte流，通过调用元信息找到App2。然后给App2重放byte流，这样就可以进行dubbo调用了。事实上，App2从隧道网关看到的byte流和从集群内其它机器调用的byte流完全一致。如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/zone_blog/see_same_byte.png" alt="codegen" loading="lazy"></p>
+<h2 id="%E8%BF%94%E5%9B%9E%E5%80%BC%E4%B9%9F%E9%80%9A%E8%BF%87%E9%9A%A7%E9%81%93%E6%9C%BA%E5%88%B6">返回值也通过隧道机制</h2>
+<p>很明显的，我们的返回值也需要通过隧道机制。和Request一样，其也会走两次隧道协议，如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/zone_blog/response.png" alt="codegen" loading="lazy"></p>
+<p>那么App1真正接收到的其实是Tunnel Response,怎么让其透明的接收原始response比特流呢？这就需要调用方接入笔者研发的轻量级jar包(其实，一开始的request的隧道也需要这样的jar包)</p>
+<h2 id="%E5%AF%B9dubbo%E8%BF%9B%E8%A1%8C%E6%89%A9%E5%B1%95">对dubbo进行扩展</h2>
+<p>由于dubbo有非常优秀的filter机制，可以在各种地方可以扩展。为了这个隧道机制，笔者就扩展了其中的invoke调用逻辑。如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/zone_blog/dubbo_filter.png" alt="codegen" loading="lazy"></p>
+<p>只要引入笔者写的jar包，就能够非常轻松的进行自动扩展，除了pom.xml加两行，其它业务代码完全无需修改。</p>
+<h2 id="%E9%9A%A7%E9%81%93%E7%BD%91%E5%85%B3%E7%9A%84%E6%8E%A5%E5%8F%A3%E5%8F%91%E7%8E%B0">隧道网关的接口发现</h2>
+<p>那么隧道网关A是怎么知道接口在集群B，从而投递给隧道网关B的呢？很明显的，我们需要隧道网关间的集群通信机制。</p>
+<p class="image-only"><img src="/blog/assets/source/image/zone_blog/tunnel_communicate.png" alt="codegen" loading="lazy"></p>
+<p>例如,由隧道网关向其它不同的隧道网关询问是否有此接口，并按一定策略做缓存即可。</p>
+<p class="image-only"><img src="/blog/assets/source/image/zone_blog/ask_req.png" alt="codegen" loading="lazy"></p>
+<h2 id="dubbo%E9%9B%86%E7%BE%A4%E7%9A%84%E5%8F%91%E7%8E%B0">dubbo集群的发现</h2>
+<p>最后的问题就是隧道网关怎么知道其它的dubbo集群的了，由于相对于dubbo接口数量，集群的数量是很少且不经常改变。我们只需要找个地方简单的记录下即可，例如放到数据库里面。然后由于是http调用，直接通过DNS解析域名即可做负载均衡。</p>
+<p class="image-only"><img src="/blog/assets/source/image/zone_blog/tunnel_table.png" alt="codegen" loading="lazy"></p>
+<h2 id="%E6%80%A7%E8%83%BD">性能</h2>
+<p>由于笔者的这套机制序列化和反序列化完全在Provider/Consumer端，完全没有对网关形成任何压力，所以网关的CPU消耗很低。在单个调用延迟上，由于多了两跳，不可避免的有所损耗，大概每个接口多了2ms左右。</p>
+<h2 id="%E6%80%BB%E7%BB%93">总结</h2>
+<p>这套机制从一开始构想，到完全能够在产线运行，并且性能损耗还很小，笔者还是花费了不少的精力。看到这样的结果，还是非常有成就感的。事实上，这套隧道机制在非常多的地方借鉴了网络上的概念。可谓它山之石可以攻玉！不同技术之间确实可以相互迁移，他们只是在不同的层级上解决了本质相通的问题！</p>
+<p>欢迎大家关注我公众号，里面有各种干货，还有大礼包相送哦!</p>
+<p class="image-only"><img src="/blog/assets/source/image/remote/oscimg.oschina.net/up-2e9a0d2a1798d1fdd8738b1114742015fa1-5397f797ce35.png" alt="codegen" loading="lazy"></p></div>
+    <nav class="prev-next"><a href="/blog/articles/c-dbproxy-d9da67e9.html"><small>上一篇</small><span>用C语言撸了个DBProxy</span></a><a href="/blog/articles/dpvs-session-2f0618af.html"><small>下一篇</small><span>给DPVS加上SESSION同步功能</span></a></nav>
+  </article>
+  <aside class="article-related">
+    <h2>同类文章</h2><a href="/blog/articles/dpvs-session-2f0618af.html">给DPVS加上SESSION同步功能</a>
+<a href="/blog/articles/sql-64ebb2ab.html">自己动手写SQL执行引擎</a>
+<a href="/blog/articles/post-a64c35eb.html">分库分表中间件的高可用实践</a>
+<a href="/blog/articles/c-dbproxy-d9da67e9.html">用C语言撸了个DBProxy</a>
+<a href="/blog/articles/sql-3e4ea183.html">自己动手写SQL查询引擎-总篇</a>
+<a href="/blog/articles/mysql-79d92f6a.html">MySql之自动同步表结构</a>
+<a href="/blog/articles/mysql-crud-929680b4.html">MySql之自动生成CRUD代码</a>
+  </aside>
+</main>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, securityLevel: "loose" });
+</script>
+</body>
+</html>

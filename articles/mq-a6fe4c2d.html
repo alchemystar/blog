@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="核心反常点：应用启动后前 10 分钟正常，之后 MQ 开始固定堆积，重启又短暂恢复，关键矛盾是消费线程并非一开始失败，而是在运行一段时间后卡住。">
+  <title>日常问题排查-mq不消费 - 苍天环绕的小世界</title>
+  <link rel="stylesheet" href="/blog/assets/site.css?v=20261007-contact-page">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="/blog/">苍天环绕的小世界</a>
+  <nav><a href="/blog/">首页</a><a class="nav-featured" href="/blog/featured.html">精品阅读</a><a href="/blog/#articles">文章</a><a href="/blog/contact.html">联系我</a></nav>
+</header>
+<main class="article-layout">
+  <aside class="article-aside">
+    <a class="back-link" href="/blog/">返回首页</a>
+    <div class="toc"><h2>目录</h2><a class="toc-level-1" href="#%E6%97%A5%E5%B8%B8%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5-mq%E4%B8%8D%E6%B6%88%E8%B4%B9">日常问题排查-mq不消费</a>
+<a class="toc-level-1" href="#%E9%97%AE%E9%A2%98%E7%8E%B0%E5%9C%BA">问题现场</a>
+<a class="toc-level-1" href="#%E7%9B%B4%E6%8E%A5jstack">直接jstack</a>
+<a class="toc-level-1" href="#%E8%BF%9B%E4%B8%80%E6%AD%A5%E5%88%86%E6%9E%90">进一步分析</a>
+<a class="toc-level-1" href="#%E5%88%86%E6%9E%90%E6%BA%90%E4%BB%A3%E7%A0%81">分析源代码</a>
+<a class="toc-level-1" href="#%E4%B8%BA%E4%BB%80%E4%B9%88%E4%B8%80%E5%BC%80%E5%A7%8B%E6%B2%A1%E6%9C%89%E5%8D%A1%E4%BD%8F">为什么一开始没有卡住</a>
+<a class="toc-level-1" href="#%E5%85%B3%E4%BA%8Eguavacache%E7%9A%84reload">关于guavaCache的reload</a>
+<a class="toc-level-1" href="#%E6%80%BB%E7%BB%93">总结</a>
+<a class="toc-level-1" href="#%E5%85%AC%E4%BC%97%E5%8F%B7">公众号</a></div>
+  </aside>
+  <article class="article">
+    <header class="article-title">
+      <div class="meta"><span>日常问题排查</span><time>2023.03.11</time><span>3 min read</span></div>
+      <h1>日常问题排查-mq不消费</h1>
+      <p>核心反常点：应用启动后前 10 分钟正常，之后 MQ 开始固定堆积，重启又短暂恢复，关键矛盾是消费线程并非一开始失败，而是在运行一段时间后卡住。</p>
+    </header>
+    <div class="prose"><h1 id="%E6%97%A5%E5%B8%B8%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5-mq%E4%B8%8D%E6%B6%88%E8%B4%B9">日常问题排查-mq不消费</h1>
+<p>日常问题排查系列都是一些简单问题排查，笔者将在这里介绍一些排查Bug的简单技巧，同时顺便积累素材^_^。</p>
+<h1 id="%E9%97%AE%E9%A2%98%E7%8E%B0%E5%9C%BA">问题现场</h1>
+<p>同事反馈应用出现了一个诡异的问题。mq在应用启动10分钟之后就开始堆积。反复重启了几次都是如此。</p>
+<p class="image-only"><img src="/blog/assets/source/image/mq_not_consume/mq_cumulate.png" alt="bug_locale" loading="lazy"></p>
+<h1 id="%E7%9B%B4%E6%8E%A5jstack">直接jstack</h1>
+<p>这种问题的分析思路还是比较直接的，直接jstack一下看看mq消费线程在干嘛。</p>
+<pre><code class="language-">kafka-cosume-thread#topic123# 293 waiting on com.google.common.util.concurrent.SettableFuture@ddb2dcd
+   java.lang.Thread.State: WAITING
+   @ sun.misc.Unsafe.park(Native Method)
+   @ java.util.concurrent.locks.LockSupport.park(LockSupport.java:175)
+   @ com.google.common.util.concurrent.AbstractFuture.get(AbstractFuture.java:469)
+   @ com.google.common.util.concurrent.AbstractFuture$TrustedFuture.get(AbstractFuture.java:76)
+   @ com.google.common.util.concurrent.Uninterruptibles.getUninterruptibly(Uninterruptibles.java:142)
+   @ com.google.common.cache.LocalCache$LoadingValueReference.waitForValue(LocalCache.java:3661)
+   @ com.google.common.cache.LocalCache$Segment.waitForLoadingValue(LocalCache.java:2315)
+   @ com.google.common.cache.LocalCache$Segment.get(LocalCache.java:2202)
+   @ com.google.common.cache.LocalCache.get(LocalCache.java:4053)
+   @ com.google.common.cache.LocalCache.getOrLoad(LocalCache.java:4057)
+   @ com.google.common.cache.LocalCache$LocalLoadingCache.get(LocalCache.java:4986)
+   @ com.google.common.cache.LocalCache$LocalLoadingCache.getUnchecked(LocalCache.java:4992)
+   @ xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.业务代码</code></pre>
+<p>可以看到都是waiting在google guava cache的get上。翻一下guava cache的源代码:</p>
+<pre><code class="language-">LocalCache.java
+    V get(K key, int hash, CacheLoader&lt;? super K, V&gt; loader) throws ExecutionException {
+      .......
+      // 如果此值已经触发loading动作，则等待loading动作完成
+      if (valueReference.isLoading()) {
+          return waitForLoadingValue(e, key, valueReference);
+       }
+      .......
+     }</code></pre>
+<p class="image-only"><img src="/blog/assets/source/image/mq_not_consume/getCacheBlock.png" alt="bug_locale" loading="lazy"></p>
+<h1 id="%E8%BF%9B%E4%B8%80%E6%AD%A5%E5%88%86%E6%9E%90">进一步分析</h1>
+<p>那么mq消费线程在等待谁呢？笔者搜索了整个stack，没有找到guavaCache的load函数相关的线程。对应guavaCache的业务代码大致如下</p>
+<pre><code class="language-">LocalCache.java
+    private final LoadingCache&lt;String, List&lt;String&gt;&gt; CACHE = CacheBuilder.newBuilder()
+            .maximumSize(10000)
+            .expireAfterWrite(10, TimeUnit.MINUTES)
+            .refreshAfterWrite(5, TimeUnit.MINUTES)
+            .build(new CacheLoader&lt;String, List&lt;String&gt;&gt;() {
+                @Override
+                public List&lt;String&gt; load(@NotNull String key) throws Exception {
+                    return doBusiness(key);
+                }
+
+                @Override
+                public ListenableFuture&lt;List&lt;String&gt;&gt; reload(@NotNull String key, @NotNull List&lt;String&gt; oldValue) throws Exception {
+                    return listeningExecutorService.submit(() -&gt; {
+                        try {
+                            return doBusiness(key);
+                        } catch (Exception e) {
+                            LogUtil.warn(log, &quot;刷新缓存异常&quot;);
+                            return oldValue;
+                        }
+                    });
+                }
+            });</code></pre>
+<p>而JVM的Stack中没有任何关于doBusiness这个函数的信息。也就是没有任何loading动作在执行。mq消费线程在空等。</p>
+<p class="image-only"><img src="/blog/assets/source/image/mq_not_consume/no_stack.png" alt="bug_locale" loading="lazy"></p>
+<h1 id="%E5%88%86%E6%9E%90%E6%BA%90%E4%BB%A3%E7%A0%81">分析源代码</h1>
+<p>可以看到上面那段guavaCache的expire超时时间正好是10分钟，而这个10分钟和应用启动后10分钟无响应时间一致。由此可见，一旦expire了就会导致直接卡死。而应用刚启动首次刷新的时候触发getCache确不会，这个事情有点诡异。仔细观察上面那段代码，refreshAfterWrite的超时时间是5分钟，如果按照正常逻辑，应该不会在10分钟的时候才开始刷新。由此可见refresh的时候也卡住了。而refresh是采用线程池的，可以继续从jstack中看看refresh的线程池在做什么。</p>
+<pre><code class="language-">&quot;common-pool-thread-9&quot; #XXX waiting on java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject@4b709279
+   java.lang.Thread.State: TIMED_WAITING
+   @ sun.misc.Unsafe.park(Native Method)
+   @ java.util.concurrent.locks.LockSupport.parkNanos(LockSupport.java:215)
+   @ java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.awaitNanos(AbstractQueuedSynchronizer.java:2078)
+   @ java.util.concurrent.LinkedBlockingQueue.poll(LinkedBlockingQueue.java:467)
+   @ XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX.run(XXXTask.java)
+   @ java.lang.Thread.run(Thread.java:748)</code></pre>
+<p>而这段XXXTask是个无限循环</p>
+<pre><code class="language-">class XXXTask {
+ void run(){
+  while(running){
+   // do something 
+  }
+ }
+}</code></pre>
+<p>笔者看到这里就直接明白了。guavaCache的refreshWrite和xxxTask共用了一个线程池。xxxTask是个无限循环，将线程池的所有线程占住。这样guavaCache的refreshWrite就永远躺在线程池的blockingQueue里面没有任何运行的机会。如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/mq_not_consume/reloadTask.png" alt="bug_locale" loading="lazy"></p>
+<h1 id="%E4%B8%BA%E4%BB%80%E4%B9%88%E4%B8%80%E5%BC%80%E5%A7%8B%E6%B2%A1%E6%9C%89%E5%8D%A1%E4%BD%8F">为什么一开始没有卡住</h1>
+<p>因为一开始在没有任何Cache时候，加载动作是在用户线程里的。因为当时还没有任何其它的加载任务，也就是valueReference.isLoading = false</p>
+<pre><code class="language-">LocalCache.java
+    V get(K key, int hash, CacheLoader&lt;? super K, V&gt; loader) throws ExecutionException {
+      .......
+      // 这边是false,不走这个分支
+      if (valueReference.isLoading()) {
+          return waitForLoadingValue(e, key, valueReference);
+       }
+      .......
+      // 在mq消费线程触发
+      return lockedGetOrLoad(key, hash, loader);
+     }</code></pre>
+<p>这时候再mq线程就执行了doGetCache动作，所以不会被其它任务抢占。而由于5min之后触发了线程的refresh，这时候valueReference.isLoading变为了true。并提交了reloadTask到线程池。 但线程池又被其它任务占满，导致valueRefercence.isLoading一直为true。<img src="/blog/assets/source/image/mq_not_consume/why10block.png" alt="bug_locale" loading="lazy"> 由于没有达到expire时间，所以这时候一直返回旧值。在设置的expire时间之后，由于这时旧值已经过期，又由于valueReference.isLoading,所以mq线程(也就是getCache的线程一直卡住)。对应的代码如下所示:</p>
+<pre><code class="language-">LocalCache.java
+    V get(K key, int hash, CacheLoader&lt;? super K, V&gt; loader) throws ExecutionException {
+      .......
+      if ( e != null) {
+          ReferenceEntry&lt;K, V&gt; e = getEntry(key, hash);
+          if (e != null) {
+            long now = map.ticker.read();
+            V value = getLiveValue(e, now);
+            if (value != null) {
+            // 未expire之前返回旧值
+              recordRead(e, now);
+              statsCounter.recordHits(1);
+              // 到refresh时间往线程池提交任务，设置valueReference.isLoading=true,并返回旧值
+              return scheduleRefresh(e, key, hash, value, now, loader);
+            }
+            ValueReference&lt;K, V&gt; valueReference = e.getValueReference();
+            // expire了之后等待refresh的reloadTask返回，一直被block住
+            if (valueReference.isLoading()) {
+              return waitForLoadingValue(e, key, valueReference);
+            }
+          }
+     }
+     ......</code></pre>
+<h1 id="%E5%85%B3%E4%BA%8Eguavacache%E7%9A%84reload">关于guavaCache的reload</h1>
+<p>事实上，业务系统中关于guavaCache的写法中除了公用一个线程池之外，其load和reload的处理还是非常值得借鉴的。如果不重载reload,那么假设后端存储挂了，在缓存expire之后，业务系统就再也无法获取到缓存的内容。而reload的重载可以在后端存储中返回旧值，这样能够有效的避免了后端存储挂了之后的容错问题。但是，由于对于隔离性的考虑不足进而踩了这个坑。</p>
+<h1 id="%E6%80%BB%E7%BB%93">总结</h1>
+<p>我们还是需要对各种资源(尤其是线程这样宝贵的资源)做好隔离。这样才能有效的避免其它任务的干扰。遇到类似问题时，从线程stack入手是个非常好的排查方向。</p>
+<h1 id="%E5%85%AC%E4%BC%97%E5%8F%B7">公众号</h1>
+<p>关注笔者公众号，获取更多干货文章:</p>
+<p class="image-only"><img src="/blog/assets/source/image/remote/img2020.cnblogs.com/1411116-20200925101442007-492748732-09a30055aa06.png" alt="" loading="lazy"></p></div>
+    <nav class="prev-next"><a href="/blog/articles/younggc-84c79a21.html"><small>上一篇</small><span>日常问题排查-Younggc突然变长</span></a><a href="/blog/articles/post-a12062b0.html"><small>下一篇</small><span>日常问题排查-偶发性读数据不一致</span></a></nav>
+  </article>
+  <aside class="article-related">
+    <h2>同类文章</h2><a href="/blog/articles/younggc-84c79a21.html">日常问题排查-Younggc突然变长</a>
+<a href="/blog/articles/post-ce618c61.html">日常问题排查-空闲一段时间再请求就超时</a>
+<a href="/blog/articles/dns-5b7836f2.html">日常问题排查-奇怪的DNS</a>
+<a href="/blog/articles/post-a12062b0.html">日常问题排查-偶发性读数据不一致</a>
+<a href="/blog/articles/mvcc-for-update-6ea5409f.html">日常问题排查-MVCC和for update混用导致读数据不一致</a>
+<a href="/blog/articles/post-0abe94ca.html">日常问题排查-改表时读数据不一致</a>
+<a href="/blog/articles/post-df9748ee.html">日常问题排查-连接突然全部关闭</a>
+<a href="/blog/articles/post-625093a1.html">日常问题排查-集群逐步失去响应</a>
+<a href="/blog/articles/post-aba46ada.html">日常问题排查-读从库没有原子性？</a>
+<a href="/blog/articles/redis-d4ca6a5a.html">日常问题排查-系统失去响应-Redis使用不当</a>
+<a href="/blog/articles/post-e443a4a8.html">日常问题排查-请求偶尔超时-磁盘故障</a>
+<a href="/blog/articles/post-ff1bd808.html">日常问题排查-调用超时</a>
+<a href="/blog/articles/cpu-busy-5-7a232df0.html">日常问题排查-同应用同流量，为什么CPU.busy差了 5 倍？</a>
+  </aside>
+</main>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, securityLevel: "loose" });
+</script>
+</body>
+</html>

@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="核心反常点：查询服务 999 线升高后扩容反而更糟，Young GC 变慢只出现在部分机器，根因不是 JVM 容量，而是宿主机超卖和 cgroup CPU 记账造成的指标误导。">
+  <title>解Bug之路-应用999线升高 - 苍天环绕的小世界</title>
+  <link rel="stylesheet" href="/blog/assets/site.css?v=20261007-contact-page">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="/blog/">苍天环绕的小世界</a>
+  <nav><a href="/blog/">首页</a><a class="nav-featured" href="/blog/featured.html">精品阅读</a><a href="/blog/#articles">文章</a><a href="/blog/contact.html">联系我</a></nav>
+</header>
+<main class="article-layout">
+  <aside class="article-aside">
+    <a class="back-link" href="/blog/">返回首页</a>
+    <div class="toc"><h2>目录</h2><a class="toc-level-1" href="#%E8%A7%A3bug%E4%B9%8B%E8%B7%AF-%E5%BA%94%E7%94%A8999%E7%BA%BF%E5%8D%87%E9%AB%98">解Bug之路-应用999线升高</a>
+<a class="toc-level-1" href="#%E5%89%8D%E8%A8%80">前言</a>
+<a class="toc-level-1" href="#bug%E7%8E%B0%E5%9C%BA">Bug现场</a>
+<a class="toc-level-1" href="#young-gc%E5%8D%87%E9%AB%98">Young GC升高</a>
+<a class="toc-level-1" href="#%E4%B8%BA%E4%BB%80%E4%B9%88young-gc%E5%8D%87%E9%AB%98">为什么Young GC升高</a>
+<a class="toc-level-1" href="#%E4%B8%BA%E4%BB%80%E4%B9%88%E5%8F%AA%E6%9C%89%E9%83%A8%E5%88%86%E6%9C%BA%E5%99%A8young-gc%E5%8D%87%E9%AB%98">为什么只有部分机器Young GC升高</a>
+<a class="toc-level-1" href="#%E5%AF%BB%E6%89%BE%E8%BF%99%E4%BA%9B%E6%9C%BA%E5%99%A8%E7%9A%84%E5%85%B1%E5%90%8C%E7%89%B9%E5%BE%81">寻找这些机器的共同特征</a>
+<a class="toc-level-2" href="#young-gc%E9%83%BD%E5%A4%A7%E5%B9%85%E5%8D%87%E9%AB%98">young gc都大幅升高</a>
+<a class="toc-level-2" href="#cpu-busy">CPU.Busy</a>
+<a class="toc-level-3" href="#delta-nr-throttled%E5%92%8Cdelta-throttled-time">delta_nr_throttled和delta_throttled_time</a>
+<a class="toc-level-1" href="#%E5%AE%BF%E4%B8%BB%E6%9C%BAcpu%E9%A3%99%E5%8D%87">宿主机CPU飙升</a>
+<a class="toc-level-2" href="#%E5%AE%BF%E4%B8%BB%E6%9C%BA%E8%B6%85%E5%8D%96">宿主机超卖</a>
+<a class="toc-level-1" href="#%E4%B8%BA%E4%BB%80%E4%B9%88%E7%AC%AC%E4%B8%80%E6%AC%A1%E6%89%A9%E5%AE%B9%E5%90%8E%E5%8A%A0%E5%89%A7%E4%BA%86%E9%97%AE%E9%A2%98">为什么第一次扩容后加剧了问题</a>
+<a class="toc-level-2" href="#%E4%B8%BA%E4%BB%80%E4%B9%88%E7%AC%AC%E4%BA%8C%E6%AC%A1%E6%89%A9%E5%AE%B9%E4%B9%8B%E5%90%8E999%E7%BA%BF%E6%81%A2%E5%A4%8D%E6%AD%A3%E5%B8%B8">为什么第二次扩容之后999线恢复正常</a>
+<a class="toc-level-1" href="#%E4%B8%BA%E4%BB%80%E4%B9%88%E5%AE%B9%E5%99%A8%E7%9B%B8%E5%85%B3%E7%9A%84cpu-busy%E5%9C%A8%E5%AE%BF%E4%B8%BB%E6%9C%BA%E5%B7%B2%E7%BB%8F%E6%8E%A5%E8%BF%91100-%E7%9A%84%E6%83%85%E5%86%B5%E4%B8%8B-%E4%BE%9D%E6%97%A7%E5%8F%AA%E5%B1%95%E7%A4%BA60-%E7%9A%84">为什么容器相关的CPU busy在宿主机已经接近100%的情况下，依旧只展示60%的</a>
+<a class="toc-level-1" href="#%E5%AE%B9%E5%99%A8cpu-busy%E5%92%8Cidle%E7%9A%84%E8%AE%A1%E7%AE%97">容器CPU busy和idle的计算</a>
+<a class="toc-level-1" href="#nr-throttled%E5%92%8Cthrottled-time">nr_throttled和throttled_time</a>
+<a class="toc-level-2" href="#%E9%82%A3%E4%B9%88%E5%88%B0%E5%BA%95%E6%98%AF%E5%86%85%E6%A0%B8bug%E8%BF%98%E6%98%AF%E8%B6%85%E5%8D%96%E6%98%AF%E4%B8%BB%E5%9B%A0%E5%91%A2">那么到底是内核Bug还是超卖是主因呢？</a>
+<a class="toc-level-2" href="#%E5%85%B3%E4%BA%8Ecgroup%E7%9A%84%E6%A0%B8%E6%95%B0%E5%88%86%E9%85%8D">关于Cgroup的核数分配</a>
+<a class="toc-level-1" href="#%E6%94%B9%E8%BF%9B%E6%8E%AA%E6%96%BD">改进措施</a>
+<a class="toc-level-1" href="#%E4%B8%BA%E4%BB%80%E4%B9%88young-gc%E4%BC%9A%E5%8F%98%E6%85%A2">为什么Young GC会变慢</a>
+<a class="toc-level-1" href="#%E6%80%BB%E7%BB%93">总结</a>
+<a class="toc-level-1" href="#%E5%85%AC%E4%BC%97%E5%8F%B7">公众号</a></div>
+  </aside>
+  <article class="article">
+    <header class="article-title">
+      <div class="meta"><span>解Bug之路</span><time>2023.03.29</time><span>9 min read</span></div>
+      <h1>解Bug之路-应用999线升高</h1>
+      <p>核心反常点：查询服务 999 线升高后扩容反而更糟，Young GC 变慢只出现在部分机器，根因不是 JVM 容量，而是宿主机超卖和 cgroup CPU 记账造成的指标误导。</p>
+    </header>
+    <div class="prose"><h1 id="%E8%A7%A3bug%E4%B9%8B%E8%B7%AF-%E5%BA%94%E7%94%A8999%E7%BA%BF%E5%8D%87%E9%AB%98">解Bug之路-应用999线升高</h1>
+<h1 id="%E5%89%8D%E8%A8%80">前言</h1>
+<p>监控指标诚然是发现问题于微末之时的极佳手段，但指标往往有其表达的极限。在很多情况下，单独看一个黄金指标并不能表征系统的健康程度，反而有可能被其迷惑，进而忽略相关问题。(本文所提及的Linux Kernel源码版本为4.18.10)</p>
+<h1 id="bug%E7%8E%B0%E5%9C%BA">Bug现场</h1>
+<p>某天中午，某应用的999线突然升高。由于是个QPS高达几十万的查询服务，1分钟的升高就会影响数千个请求。初步判断应用容量不够，直接进行相关扩容，扩容后反而加剧了问题!不得已又做了一次紧急扩容，999线才恢复。这两波操作过去，20多分钟已经过去了。</p>
+<p class="image-only"><img src="/blog/assets/source/tp999_increase/%20increase_999.png" alt=" increase_999" loading="lazy"></p>
+<p>为了防止问题再次发生，我们必须要彻查相关原因。于是笔者也就参与了调查。</p>
+<h1 id="young-gc%E5%8D%87%E9%AB%98">Young GC升高</h1>
+<p>首先是去看常用的指标，例如CPU idle, GC Time。发现有一些机器的CPU达到了60%，而在这些机器中，young gc有一个大幅度的增长。</p>
+<p class="image-only"><img src="/blog/assets/source/tp999_increase/youngc.png" alt="youngc" loading="lazy"></p>
+<h1 id="%E4%B8%BA%E4%BB%80%E4%B9%88young-gc%E5%8D%87%E9%AB%98">为什么Young GC升高</h1>
+<p>看上去GC问题。那么，笔者就开始思考为什么young gc升高。翻看gc日志。看到故障期间，不停的young gc。但这些young gc的表现很诡异。有时候young gc很快，只有数十毫秒，有时确达到了数百毫秒。而且这个耗时的跳跃没什么规律，不是从某个时间点之后就一直是数百毫秒，而是数十和数百一直参杂着。</p>
+<p class="image-only"><img src="/blog/assets/source/tp999_increase/young_not_avg.png" alt="young_not_avg" loading="lazy"></p>
+<p>观察young GC的详细输出，在数百毫秒的young GC时间里，大部分时间都在[Object Copy]上。令人奇怪的是。其Copy的Object大小确实差不多的。而这是个非常单纯的查询服务，故障期间，它的流量分布以及对应的Object分布不应该有非常大的变化。那么究竟是什么原因让同样大小以及数量的Object Copy会有十倍的差距呢？</p>
+<p>再仔细观察，不仅仅是Object Copy，在其它的GC阶段也会出现时间暴涨的情况，只不过大部分集中在Object Copy而已。仅仅靠这些信息是无法看出来相关问题的。</p>
+<h1 id="%E4%B8%BA%E4%BB%80%E4%B9%88%E5%8F%AA%E6%9C%89%E9%83%A8%E5%88%86%E6%9C%BA%E5%99%A8young-gc%E5%8D%87%E9%AB%98">为什么只有部分机器Young GC升高</h1>
+<p>继续观察监控，发现问题出现在一部分机器上。而这部分机器都在一个机房(B机房)里面。另一个机房(A机房)的机器没有受任何影响。当然，出问题的机器都出现了Young GC飙高的现象。难道两个机房的流量分布不一样？经过一番统计，发现接口的调用分布只是略微有些不同。但细细思考一下，如果是机房流量分布不一样，由于同机房是负载均衡的。要出问题，也是同机房都出问题。但问题只集中B机房的一部分机器中。</p>
+<p class="image-only"><img src="/blog/assets/source/tp999_increase/B_room_error.png" alt="B_room_error" loading="lazy"></p>
+<h1 id="%E5%AF%BB%E6%89%BE%E8%BF%99%E4%BA%9B%E6%9C%BA%E5%99%A8%E7%9A%84%E5%85%B1%E5%90%8C%E7%89%B9%E5%BE%81">寻找这些机器的共同特征</h1>
+<h2 id="young-gc%E9%83%BD%E5%A4%A7%E5%B9%85%E5%8D%87%E9%AB%98">young gc都大幅升高</h2>
+<p>那么既然只有一部分机器出问题。那么笔者开始搜索起这些机器的共同特征。young gc在这部分机器耗时都大幅增长。但由于笔者尚不能通过gc日志找出原因。那么就寻找了其它特征。</p>
+<h2 id="cpu-busy">CPU.Busy</h2>
+<p>首先，是CPU.busy指标。笔者发现，出问题的机器CPU都在60%左右。但是，正常的节点CPU也有60%的，也有50%的，特征不是很明显。</p>
+<p class="image-only"><img src="/blog/assets/source/tp999_increase/B_cpu_busy.png" alt="B_cpu_busy" loading="lazy"></p>
+<h3 id="delta-nr-throttled%E5%92%8Cdelta-throttled-time">delta_nr_throttled和delta_throttled_time</h3>
+<p>在笔者观察某台故障机器监控指标的时候发现，发现delta_nr_throttled和delta_throttled_time这个指标大幅度升高。</p>
+<p class="image-only"><img src="/blog/assets/source/tp999_increase/throttled.png" alt="throttled" loading="lazy"></p>
+<p>我们看下这两个指标的含义</p>
+<pre><code class="language-">nr_throttled: 
+   Linux Doc: Number of times the group has been throttled/limited. 
+   中文解释: CGROUP被限制的数量
+delta_nr_throttled: 是通过取间隔1分钟的两个点，计算出每分钟CGROUP被限制的数量
+throttled_time: 
+   linux Doc: The total time duration (in nanoseconds) for which entities of the group have       been throttled.
+   中文解释: 某个CGroup被限制的时间
+delta_throttled_time: 通过取间隔1分钟的两个点，计算出每分钟CGROUP被限制的总时间</code></pre>
+<p>由于线上应用这边采用的是docker容器，所以会有这两个指标。而这两个指标表明了，这个CGroup由于CPU消耗太高而被宿主机的Kernel限制运行。而令人奇怪的是，这些机器的CPU最多只有60%左右，按理来说只有达到100%才能被限制(throttled/limit)。</p>
+<p class="image-only"><img src="/blog/assets/source/tp999_increase/cpu_busy_throttled.png" alt="cpu_busy_throttled" loading="lazy"></p>
+<h1 id="%E5%AE%BF%E4%B8%BB%E6%9C%BAcpu%E9%A3%99%E5%8D%87">宿主机CPU飙升</h1>
+<p>既然是宿主机限制了相关docker容器，那么很自然的联想到宿主机出了问题。统计了一下出故障容器在宿主机上的分布。发现出问题的所有容器都是集中出现在两台宿主机上！</p>
+<p class="image-only"><img src="/blog/assets/source/tp999_increase/host_concentrate.png" alt="host_concentrate" loading="lazy"></p>
+<p>查看了下这两台宿主机的CPU Busy，发现平均已经90%多了。</p>
+<p class="image-only"><img src="/blog/assets/source/tp999_increase/host_cpu_busy.png" alt="host_cpu_busy" loading="lazy"></p>
+<h2 id="%E5%AE%BF%E4%B8%BB%E6%9C%BA%E8%B6%85%E5%8D%96">宿主机超卖</h2>
+<p>详细观察了下这两个宿主机，发现它们超卖非常严重。而且当前这个出问题的应用非常集中的部署在这两个宿主机上。一台48核的宿主机，仅仅出问题的这个应用就分配了10个，而且分配的资源是每个容器8核(实际上是时间片)。那么按照，每个容器使用了60%计算，正好用满了这个宿主机的核</p>
+<pre><code class="language-">60% * 10 * 8 = 48 正好和宿主机的48核相对应。</code></pre>
+<p class="image-only"><img src="/blog/assets/source/tp999_increase/48_equal_48.png" alt="48_equal_48" loading="lazy"></p>
+<h1 id="%E4%B8%BA%E4%BB%80%E4%B9%88%E7%AC%AC%E4%B8%80%E6%AC%A1%E6%89%A9%E5%AE%B9%E5%90%8E%E5%8A%A0%E5%89%A7%E4%BA%86%E9%97%AE%E9%A2%98">为什么第一次扩容后加剧了问题</h1>
+<p>因为这次是通过API自动扩容，而由于打散度计算的原因，还是扩容到了这两台已经不堪重负的CPU上。同时应用启动加载时候的CPU消耗也加剧了宿主机CPU的消耗。</p>
+<h2 id="%E4%B8%BA%E4%BB%80%E4%B9%88%E7%AC%AC%E4%BA%8C%E6%AC%A1%E6%89%A9%E5%AE%B9%E4%B9%8B%E5%90%8E999%E7%BA%BF%E6%81%A2%E5%A4%8D%E6%AD%A3%E5%B8%B8">为什么第二次扩容之后999线恢复正常</h2>
+<p>因为第二次直接通过API手动扩容，一次性在10多台宿主机上机器上扩了一倍的机器。这样分配在这两台不堪重负的宿主机上的应用流量降低到一半左右。进而使得999线恢复正常。</p>
+<h1 id="%E4%B8%BA%E4%BB%80%E4%B9%88%E5%AE%B9%E5%99%A8%E7%9B%B8%E5%85%B3%E7%9A%84cpu-busy%E5%9C%A8%E5%AE%BF%E4%B8%BB%E6%9C%BA%E5%B7%B2%E7%BB%8F%E6%8E%A5%E8%BF%91100-%E7%9A%84%E6%83%85%E5%86%B5%E4%B8%8B-%E4%BE%9D%E6%97%A7%E5%8F%AA%E5%B1%95%E7%A4%BA60-%E7%9A%84">为什么容器相关的CPU busy在宿主机已经接近100%的情况下，依旧只展示60%的</h1>
+<p>很明显的，容器的CPU Busy在很大程度上误导了我们的决策。在之前的容量压测中，压到期望的TPS时候CPU Busy只有50%多，而且基本是按照TPS线性增长的，就使得我们觉得这个应用在当前的资源下容量是绰绰有余。毕竟CPU Busy显示的还是非常健康的。</p>
+<p>但没想到，在压测CPU 50%多的时候，其实已经到了整个应用容量的极限。线上的流量和压测流量的构造有稍微一点的区别，让CPU涨了个5%左右,过了那个宿主机CPU的临界点，进而就导致了应用出现了非常高的999线。</p>
+<h1 id="%E5%AE%B9%E5%99%A8cpu-busy%E5%92%8Cidle%E7%9A%84%E8%AE%A1%E7%AE%97">容器CPU busy和idle的计算</h1>
+<p>为了探究这个问题，笔者就不得不看下容器的CPU busy是如何计算出来的。毕竟Linux的CGroup并没有提供CPU Busy这个指标。翻阅了一下监控的计算公式。</p>
+<pre><code class="language-">每隔5秒取一下cpuacct.usage的数据
+cat /sys/fs/cgroup/cpu/cpuacct.usage
+CPU.busy =  (cpuacct.usage(T秒) - cpuacct.usage(T-5秒))/((5秒)*CPU核数)
+CPU.idle = 1- CPU.busy</code></pre>
+<p class="image-only"><img src="/blog/assets/source/tp999_increase/cgroup.cpubusy.png" alt="cgroup.cpubusy" loading="lazy"></p>
+<p>那么我们可以看一下cpuacct.usage是如何计算的。Kernel的代码实现为:</p>
+<pre><code class="language-">cpuusage_read
+  |-&gt;__cpuusage_read
+  		|-&gt;cpuacct_cpuusage_read
+
+static u64 __cpuusage_read(struct cgroup_subsys_state *css,
+			   enum cpuacct_stat_index index)
+{
+  /* 获取当前对应cgroup中的cpuacct结构体*/
+	struct cpuacct *ca = css_ca(css);
+	...... 
+	/* 遍历所有可能的CPU */
+	for_each_possible_cpu(i)
+		totalcpuusage += cpuacct_cpuusage_read(ca, i, index);
+
+	return totalcpuusage;
+}
+static u64 cpuacct_cpuusage_read(struct cpuacct *ca, int cpu,
+         enum cpuacct_stat_index index) 
+{			
+			// 从当前cgroup中获取对应相应的cpuusage结构体
+			struct cpuacct_usage *cpuusage = per_cpu_ptr(ca-&gt;cpuusage, cpu);
+			......
+			/* i=0计算的是user space的usage，i=1计算的是kernel space的usage */
+      for (i = 0; i &lt; CPUACCT_STAT_NSTATS; i++)
+        data += cpuusage-&gt;usages[i];
+}</code></pre>
+<p>由代码可见，其计算是将所有CPU中的关于当前CGroup的cpuusage-&gt;usages中的user和system time相加，进而获取到最终此。那么我们可以进一步看下CGroup中的cpuusage是如何计算的。这边笔者以我们常用的CFS(完全公平调度的代码实现为例):</p>
+<pre><code class="language-">/* 相关的一条cpuusage代码路径如下 *.
+pick_next_task_fair
+	|-&gt;put_prev_entity
+		|-&gt;update_curr
+			|-&gt;cgroup_account_cputime /* 其中还包含对当前cgroup的parentGroup的修正*/
+				|-&gt;cpuacct_charge
+void cpuacct_charge(struct task_struct *tsk, u64 cputime)
+{
+	struct cpuacct *ca;
+	int index = CPUACCT_STAT_SYSTEM;
+	struct pt_regs *regs = task_pt_regs(tsk);
+	/* 判断是system time还是user time */
+	if (regs &amp;&amp; user_mode(regs))
+		index = CPUACCT_STAT_USER;
+	rcu_read_lock();
+  /* 将相关的CPU运行时间入账 */
+	for (ca = task_ca(tsk); ca; ca = parent_ca(ca))
+		this_cpu_ptr(ca-&gt;cpuusage)-&gt;usages[index] += cputime;
+
+	rcu_read_unlock();
+}
+</code></pre>
+<p>由上面代码可知，kernel会在进程间切换的时候，将当前进程的运行时间记入到相关。那么就是这个cputime的计算了。</p>
+<pre><code class="language-">/* 一个cfs_rq可以是一个task进程，也可以是一个cgroup，代表的是完全公平调度runqueue中的一个元素 */
+static void update_curr(struct cfs_rq *cfs_rq){
+     /* 这个now=rq-&gt;clock_task，clock_task返回的rq-&gt;clock减去处理IRQs窃取的时间，其计算不在本文描述范围内 , 不考虑IRQ的话，可以认为等于此rq的总运行时间*/
+     u64 now = rq_clock_task(rq_of(cfs_rq));
+     /* 这个delta_exec表明了在这一次的运行中，此cfs_rq(进程orCgroup)实际运行了多长时间*/
+     delta_exec = now - curr-&gt;exec_start;
+     curr-&gt;exec_start = now;
+     ......
+     /* 将这一次进程在当前CFS调度下运行的时间更新如相关cgroup的usage */
+     cgroup_account_cputime(curtask, delta_exec);
+     .....
+}</code></pre>
+<p>好了，翻了一大堆代码，我们的cpuusage实际上就是这个cgroup在这一次CFS的kernel调度时间片中实际运行的时间。而我们的应用主要是一个Java进程，那么其基本就是这个Java进程运行了多长时间。值得注意的是，每个CPU的调度都会进行这样的计算。如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/tp999_increase/cpuusage_account.png" alt="cpuusage_account" loading="lazy"></p>
+<p>那么我们来看一下在超卖情况下的表现。如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/tp999_increase/host_vs_docker_cpu.png" alt="host_vs_docker_cpu" loading="lazy"></p>
+<p>(图中1.25s只是为了绘图方便，实际调度时间切片非常小)</p>
+<p>如果超卖了，而且进程都比较繁忙，那么每个CGroup肯定不能完全的占用宿主机的CPU。指定到某个CPU上就势必会有多个CGroup交替进行。而之前的容器CPU.Busy计算公式</p>
+<pre><code class="language-">CPU.busy =  (cpuacct.usage(T秒) - cpuacct.usage(T-5秒))/((5秒)*CPU核数)</code></pre>
+<p>反应的实际上是这个容器在这个CPU(核)上运行了多长时间。而完全不能反应CPU的繁忙程度。</p>
+<p>如果不超卖，每个CGroup被均匀的分到各自的CPU上互不影响(当然如果cgroup绑核了那隔离性更好)，那么这个计算公式才能够比较准确的反映CPU的情况。</p>
+<h1 id="nr-throttled%E5%92%8Cthrottled-time">nr_throttled和throttled_time</h1>
+<p>在Kernel中这两个参数表示由于分配给Cgroup的cfs_quota_us时间片额度用完。进而导致被内核限制,限制的次数为nr_throttled，限制的总时间为throttled_time。</p>
+<pre><code class="language-">cat /sys/fs/cgroup/cpuacct/cpu.cfs_period_us 100000(100ms)
+cat /sys/fs/cgroup/cpuacct/cpu.cpu.cfs_quota_us 800000(800ms) 因为有8个核，所以分配了800ms
+cat /sys/fs/cgroup/cpuset/cpuset.cpus 基本打散到所有的CPU上</code></pre>
+<p>但这边和上面的推论有一个矛盾的点,如果由于CPU超卖而引起的问题的话。那么每个CGroup并不能分到800ms这样总的时间片。因为按照上面的推算，每个CGroup最多分到60% * 800=480ms的时间片。而这个时间片是不应该触发nr_throttled和throttled_time的！</p>
+<p class="image-only"><img src="/blog/assets/source/tp999_increase/not_exhaust_quota.png" alt="not_exhaust_quota" loading="lazy"></p>
+<p>就在笔者对着Kernel源码百思不得其解之际，笔者发现Linux Kernel在5.4版本有个优化</p>
+<pre><code class="language-">https://lwn.net/Articles/792268/
+sched/fair: Fix low cpu usage with high throttling by removing expiration of cpu-local slices</code></pre>
+<p>也就是说在5.4版本之前，在一些场景下low cpu  usage依旧能导致cgroup被throttled。而这个场景即是:</p>
+<pre><code class="language-">that highly-threaded, non-cpu-bound applications
+running under cpu.cfs_quota_us constraints can hit a high percentage of
+periods throttled
+高度线程化，非CPU密集的应用程序在CPU.cfs_quota_us约束下运行时，可能会有很高的周期被限制，同时不会消耗分配的配额。</code></pre>
+<p>出故障的应用使用了大量的线程去处理请求，同时也有大量的IO操作(操作分布式缓存)，符合此Bug的描述。</p>
+<h2 id="%E9%82%A3%E4%B9%88%E5%88%B0%E5%BA%95%E6%98%AF%E5%86%85%E6%A0%B8bug%E8%BF%98%E6%98%AF%E8%B6%85%E5%8D%96%E6%98%AF%E4%B8%BB%E5%9B%A0%E5%91%A2">那么到底是内核Bug还是超卖是主因呢？</h2>
+<p>这个疑问当然靠对比来解决，我们在故障之后，做了一次压测(CPU.Busy &gt; 60%)，这次应用是不超卖的。这次delta_nr_throttled和delta_throttled_time依旧存在，不过比故障时的数量少了一个数量级。</p>
+<p class="image-only"><img src="/blog/assets/source/tp999_increase/error_vs_press.png" alt="error_vs_press" loading="lazy"></p>
+<p>同时999线从故障时候的暴涨6倍变成了只增长1倍。</p>
+<p class="image-only"><img src="/blog/assets/source/tp999_increase/999_vs.png" alt="999_vs" loading="lazy"></p>
+<p>很明显的，宿主机超卖是主因！而且宿主机超卖后的宿主机CPU负载过高还加重了这个Bug的触发。</p>
+<h2 id="%E5%85%B3%E4%BA%8Ecgroup%E7%9A%84%E6%A0%B8%E6%95%B0%E5%88%86%E9%85%8D">关于Cgroup的核数分配</h2>
+<p>线上的Cgroup(容器)的核数分配实际上是按照(核数=cfs_quota_us/cfs_period_us)这个模型去分配的，同时并不会在cpuset进行绑核。也就是说一个48核的容器，应用的各个线程可以跑在任何一个核上，只不过只分配了8核的时间片额度。这就利用了Cgroup的带宽控制机制CFS_BANDWITH。</p>
+<h1 id="%E6%94%B9%E8%BF%9B%E6%8E%AA%E6%96%BD">改进措施</h1>
+<p>很明显的改进措施可以是下面几种:</p>
+<pre><code class="language-">针对超卖:
+   1) 宿主机不超卖，但不是一个好的选择，因为资源利用率上不去，存在大量CPU利用率很低的应用
+   2) 根据应用的CPU利用率情况进行高低错配放到宿主机上，在利用资源利用率的同时又不至于互相影响
+针对内核的Bug
+   1) 可以打Patch或者升级到5.4</code></pre>
+<h1 id="%E4%B8%BA%E4%BB%80%E4%B9%88young-gc%E4%BC%9A%E5%8F%98%E6%85%A2">为什么Young GC会变慢</h1>
+<p>回过头来看看young gc为什么会慢就很明显了。因为在young gc时候，被shedule出去了，而且没有其它的空闲CPU让jvm可以schedule回来，白白浪费了很长时间。</p>
+<p>因为object copy在这个应用的young gc中是最耗费CPU以及时间的操作，所以自然在object copy阶段出现变慢的现象。</p>
+<p class="image-only"><img src="/blog/assets/source/tp999_increase/why_younggc_slow.png" alt="why_younggc_slow" loading="lazy"></p>
+<p>当然，进程schedule可以处在各种时间点，所以并不仅仅是Young GC变慢了，在请求处理阶段也可能变慢。</p>
+<h1 id="%E6%80%BB%E7%BB%93">总结</h1>
+<p>指标虽然能够比较准确且客观的反映两个时间点的变化。但指标的定义和对指标的解读确实比较主观的，没有理解清楚指标所能表达的极限以及使用场景。往往会让我们排查问题进入误区！</p>
+<h1 id="%E5%85%AC%E4%BC%97%E5%8F%B7">公众号</h1>
+<p class="image-only"><img src="/blog/assets/source/image/remote/mmbiz.qpic.cn/640-35cd2250078d.png" alt="图片" loading="lazy"></p></div>
+    <nav class="prev-next"><a href="/blog/articles/bug-9ac0cd85.html"><small>上一篇</small><span>解Bug之路-主从切换&quot;未成功&quot;?</span></a><a href="/blog/articles/bug-jvm-bug-7e5879da.html"><small>下一篇</small><span>解Bug之路-记一次JVM堆外内存泄露Bug的查找</span></a></nav>
+  </article>
+  <aside class="article-related">
+    <h2>同类文章</h2><a href="/blog/articles/bug-nat-e95e7827.html">解Bug之路-NAT引发的性能瓶颈</a>
+<a href="/blog/articles/bug-key-c35d61ac.html">解Bug之路-隔离故障点后业务不恢复?-热点Key处理与亚稳态故障</a>
+<a href="/blog/articles/bug-with-ai-909a31ae.html">解Bug之路-with AI-应用被限流？</a>
+<a href="/blog/articles/bug-mysql-seconds-behind-master-f91a1925.html">解Bug之路-MySQL-Seconds_behind_master精度问题引发的思考</a>
+<a href="/blog/articles/bug-zookeeper-1b26955c.html">解Bug之路-ZooKeeper集群拒绝服务</a>
+<a href="/blog/articles/bug-9ac0cd85.html">解Bug之路-主从切换&quot;未成功&quot;?</a>
+<a href="/blog/articles/bug-tcp-bug-d2a0b4b0.html">解Bug之路-TCP使用不当引起的Bug</a>
+<a href="/blog/articles/bug-6995f45c.html">解Bug之路-记一次线上请求偶尔变慢的排查</a>
+<a href="/blog/articles/bug-nginx-502-bad-gateway-a95af6ef.html">解Bug之路-Nginx 502 Bad Gateway</a>
+<a href="/blog/articles/bug-sql-64530c9f.html">解Bug之路-中间件&quot;SQL重复执行&quot;</a>
+<a href="/blog/articles/bug-c0b96e67.html">解Bug之路-记一次调用外网服务概率性失败问题的排查</a>
+<a href="/blog/articles/bug-9db7e3e3.html">解Bug之路-记一次存储故障的排查过程</a>
+<a href="/blog/articles/bug-dubbo-zookeeper-29ed9784.html">解Bug之路-dubbo应用无法重连zookeeper</a>
+<a href="/blog/articles/bug-dubbo-cac59f88.html">解Bug之路-dubbo流量上线时的非平滑问题</a>
+<a href="/blog/articles/bug-sql-f1e2ba02.html">解Bug之路-记一次中间件导致的慢SQL排查过程</a>
+<a href="/blog/articles/bug-kernel-tcp-caa0286b.html">解Bug之路-记一次对端
+  </aside>
+</main>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, securityLevel: "loose" });
+</script>
+</body>
+</html>

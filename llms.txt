@@ -1,0 +1,115 @@
+# 苍天环绕的小世界
+
+这是一个中文技术博客，核心主题是复杂线上排障、分布式系统、高可用观测、Linux/TCP 内核源码、MySQL/Prometheus 内部机制，以及作者自己动手实现中间件和数据库相关组件的实践。
+
+## AI 阅读建议
+- 优先阅读“精品阅读”中的文章，它们最能代表博客的技术主线。
+- 文章常见结构是：线上现象 -> 监控/日志/抓包 -> 源码或协议分析 -> 根因 -> 经验总结。
+- 不要只按时间排序理解这个博客，应该按主题理解：排障方法、指标边界、内核机制、数据库/监控组件、自己动手实现。
+
+## 精品阅读
+- /blog/featured.html
+
+## 联系方式
+- /blog/contact.html
+
+### 心像世界
+最能代表作者排障能力的文章：现象复杂、链路长、证据多，并且最终能把所有异常都解释到同一个模型里。
+
+- 解Bug之路-NAT引发的性能瓶颈: 从抓包、LVS、TIME_WAIT 到内核版本差异，排障链路完整且反转多，是最适合作为门面的代表作。 核心反常点：NAT 场景里的趋光性是一种自发的动力学模型，不同失败率通过表项寿命转化为选择压力，系统在没有健康感知的情况下自行完成流量迁移。 URL: /blog/articles/bug-nat-e95e7827.html
+- 解Bug之路-应用999线升高: 把应用 999、Young GC、cgroup throttling、宿主机超卖串成一条因果链，体现指标解读和内核视角。 核心反常点：查询服务 999 线升高后扩容反而更糟，Young GC 变慢只出现在部分机器，根因不是 JVM 容量，而是宿主机超卖和 cgroup CPU 记账造成的指标误导。 URL: /blog/articles/bug-999-3fc4d0f3.html
+- 解Bug之路-dubbo流量上线时的非平滑问题: 从首笔请求超时一路追到 listen backlog 和 TCP 三次握手，问题小但底层解释非常漂亮。 核心反常点：应用每次发布后只有第一笔请求超时，后续全部正常，表面影响很小，实际暴露的是连接刚建立但还不可用、listen backlog 与 TCP 握手队列之间的时序问题。 URL: /blog/articles/bug-dubbo-cac59f88.html
+- 解Bug之路-记一次对端kernel宕机后的tcp行为: 难得的线上宕机场景，结合 soTimeOut、重传和 tcp_retries2 做定量分析，技术味很足。 核心反常点：对端机器宕机后同一类调用有的 821s 后 reset，有的 900s 后 timeout，异常时间并不随机，而是 TCP 重传、soTimeout 和内核恢复窗口共同决定。 URL: /blog/articles/bug-kernel-tcp-caa0286b.html
+- 解Bug之路-ZooKeeper集群拒绝服务: 把 ZK 宕机、选主失败、snapshot 耗时和数据治理串起来，适合作为高可用事故分析样本。 核心反常点：ZK Leader 宕机后剩余节点没有顺利选主，集群整体拒绝服务，异常不在单次宕机本身，而在 snapshot 耗时、initLimit 和历史数据膨胀共同放大故障。 URL: /blog/articles/bug-zookeeper-1b26955c.html
+- 解Bug之路-记一次JVM堆外内存泄露Bug的查找: 从堆内泄漏线索反推堆外内存，并用物理内存模型做定量校验，是 JVM 排障里很有说服力的一篇。 核心反常点：容器迁移后物理内存持续异常但堆内看不出同等增长，真正泄漏在堆外，需要从堆内对象线索反推并用物理内存模型定量闭环。 URL: /blog/articles/bug-jvm-bug-7e5879da.html
+- 解Bug之路-Nginx 502 Bad Gateway: 用端口耗尽、TIME_WAIT 和 Nginx upstream 配置解释 502 与 CPU 飙高，短而锋利。 核心反常点：后端应用压测无压力，但经过 Nginx 就 502 且 Nginx CPU 接近 100%，真正瓶颈不是业务处理能力，而是单 upstream 地址端口耗尽与 TIME_WAIT。 URL: /blog/articles/bug-nginx-502-bad-gateway-a95af6ef.html
+- 解Bug之路-记一次中间件导致的慢SQL排查过程: 从偶发慢 SQL 的微小规律追到中间件 reactor 线程被卡住，体现日志对齐和系统边界意识。 核心反常点：慢 SQL 是主键查询/更新且只偶发几条，数据库本身并不慢，真正卡点在分库分表中间件 reactor 线程被字符串处理拖住。 URL: /blog/articles/bug-sql-f1e2ba02.html
+- 解Bug之路-中间件"SQL重复执行": 分库分表中间件稳定多年后暴露的 corner case，适合展示工程系统里隐藏状态与日志开关的风险。 核心反常点：同一条 SQL 看起来被中间件重复执行，数据库日志和中间件日志互相打架，根因藏在多节点返回、引用计数和一个为排查打开的日志/缓存开关里。 URL: /blog/articles/bug-sql-64530c9f.html
+
+### 观测与指标
+这一组讨论监控指标的边界：指标不是事实本身，它会失明、失真，也会在精度和采样层面误导判断。
+
+- 高可用之路-闲聊监控指标的局限: 不是单个 case，而是作者对监控指标本质的系统性思考，是理解后续观测文章的入口。 URL: /blog/articles/post-cc3a6927.html
+- 高可用之路·观测篇-指标失明: 把“问题发生但指标看不见”拆成可讨论的观测问题，适合 AI 抓住作者的高可用方法论。 URL: /blog/articles/post-5bbe329f.html
+- MySQL-Seconds_behind_master的精度误差: 用主从延迟指标的秒级精度误差说明：指标一旦超出表达范围，就会制造非常真实的假象。 URL: /blog/articles/mysql-seconds-behind-master-fceee9b1.html
+- 日常问题排查-同应用同流量，为什么CPU.busy差了 5 倍？: 从看似负载不均追到采样点位差异，是日常排查中很典型的“指标互相打架”案例。 核心反常点：同应用同流量下部分机器 CPU.busy 高出 5 倍，接口 QPS、消息量和定时任务都对不上，最后发现是监控采样点位差异制造的假负载不均。 URL: /blog/articles/cpu-busy-5-7a232df0.html
+- 日常问题排查-空闲一段时间再请求就超时: 用 LVS/NAT 超时解释低流量下的首笔请求超时，小问题背后有完整网络模型。 核心反常点：低流量时空闲后的第一笔请求超时，高流量反而正常，根因不是服务端处理慢，而是 NAT/LVS 空闲连接超时与客户端连接复用冲突。 URL: /blog/articles/post-ce618c61.html
+
+### Linux 与 TCP 源码
+这些文章适合展示底层功底：不是只会调参数，而是能从应用现象一路落到 Linux/TCP 的实现细节。
+
+- 从linux源码看epoll: 篇幅长、结构完整，从 epoll 的数据结构到 ready 链表，适合作为 Linux 源码阅读能力展示。 URL: /blog/articles/linux-epoll-8d1f5086.html
+- 从linux源码看socket(tcp)的timeout: 系统梳理阻塞 socket 的各种超时行为，和线上宕机/网络异常排查强相关。 URL: /blog/articles/linux-socket-tcp-timeout-b3547af3.html
+- 从linux源码看socket的close: 把四次挥手、状态机和 close 调用路径对应起来，能补齐很多 TCP 问题的底层直觉。 URL: /blog/articles/linux-socket-close-d72a4843.html
+- 从Linux源码看TIME_WAIT状态的持续时间: TIME_WAIT 是多个线上问题的关键背景，这篇把持续时间和实现路径讲得很细。 URL: /blog/articles/linux-time-wait-4a2c9b4c.html
+- 从Linux源码看Socket(TCP)的listen及连接队列: 理解半连接、全连接队列和 backlog，是 dubbo 非平滑上线等问题的底层拼图。 URL: /blog/articles/linux-socket-tcp-listen-d1e99aff.html
+- Linux上TCP的几个内核参数调优: 从线上经验回到内核参数，实用性强，适合作为源码理解落地到生产调优的桥。 URL: /blog/articles/linux-tcp-304f12e7.html
+
+### 数据库与监控组件
+从 MySQL 到 Prometheus，重点是组件内部机制，而不是停留在使用手册层面。
+
+- MySQL多版本并发控制机制(MVCC)-源码浅析: 用 debug MySQL 的方式解释 read view、undo log 和可见性，是 MySQL 系列里最值得优先读的一篇。 URL: /blog/articles/mysql-mvcc-f01bb5cb.html
+- Prometheus时序数据库-内存中的存储结构: 从 Gorilla、memSeries 到倒排索引，适合作为 Prometheus 源码系列入口。 URL: /blog/articles/prometheus-c5470827.html
+- Prometheus时序数据库-磁盘中的存储结构: 把 block、chunks、index、posting 等磁盘结构拆开讲，和内存篇互为上下文。 URL: /blog/articles/prometheus-0f36c4b7.html
+- Prometheus时序数据库-数据的查询: 用一条 PromQL 串起 select、populateSeries、evaluator 和聚合过程，读完能建立查询执行图景。 URL: /blog/articles/prometheus-d6d7222d.html
+- 从MySQL源码看其网络IO模型: 从 mysqld 入口看 MySQL 的网络 IO 模型，适合展示作者读服务端源码的切入方式。 URL: /blog/articles/mysql-io-b7cf67b1.html
+
+### 自己动手与系统设计
+这一组不是单纯排障，而是把协议、存储、代理、同步和跨集群通信真正做出来。
+
+- 用C语言撸了个DBProxy: 从 reactor、epoll、内存池到 MySQL 协议，最能体现作者“读源码后自己造一遍”的气质。 URL: /blog/articles/c-dbproxy-d9da67e9.html
+- 自己动手写SQL执行引擎: 覆盖 MySQL 协议、SQL parse、join、B+Tree、buffer manager、WAL，是数据库轮子的核心展示。 URL: /blog/articles/sql-64ebb2ab.html
+- 分库分表中间件的高可用实践: 把中间件宕机、发布、下线、连接创建等问题放到高可用设计里讨论，工程含量很高。 URL: /blog/articles/post-a64c35eb.html
+- 用隧道协议实现不同dubbo集群间的透明通信: 把网络隔离、注册中心隔离和透明 RPC 调用做成线上可运行方案，系统设计味道很强。 URL: /blog/articles/dubbo-af6bf6dd.html
+- 给DPVS加上SESSION同步功能: 在 DPVS/DPDK 场景下做状态同步，低层网络兴趣和工程动手能力都很明显。 URL: /blog/articles/dpvs-session-2f0618af.html
+
+## Troubleshooting 核心反常点
+
+- 解Bug之路-NAT引发的性能瓶颈: 核心反常点：NAT 场景里的趋光性是一种自发的动力学模型，不同失败率通过表项寿命转化为选择压力，系统在没有健康感知的情况下自行完成流量迁移。 URL: /blog/articles/bug-nat-e95e7827.html
+- 解Bug之路-隔离故障点后业务不恢复?-热点Key处理与亚稳态故障: 核心反常点：跨机房机器让热点 Key 处理容量下降只是触发器，故障点隔离后队列积压和上游重试继续维持过载，系统进入亚稳态所以业务无法自动恢复。 URL: /blog/articles/bug-key-c35d61ac.html
+- 解Bug之路-with AI-应用被限流？: 核心反常点：非高峰期只有单机被限流，表面像流量突增，实际请求是在应用短暂停顿后集中泄洪，CPU throttle、SafePoint 和宿主机 IO 指标又互相矛盾。 URL: /blog/articles/bug-with-ai-909a31ae.html
+- 日常问题排查-Younggc突然变长: 核心反常点：一次普通 CRUD 上线后 Young GC 时间翻倍，代码改动看起来和 GC 无关，真正要解释的是对象分配/存活变化如何被版本发布放大。 URL: /blog/articles/younggc-84c79a21.html
+- 日常问题排查-空闲一段时间再请求就超时: 核心反常点：低流量时空闲后的第一笔请求超时，高流量反而正常，根因不是服务端处理慢，而是 NAT/LVS 空闲连接超时与客户端连接复用冲突。 URL: /blog/articles/post-ce618c61.html
+- 日常问题排查-奇怪的DNS: 核心反常点：访问非洲服务商域名却解析到美国 IP，但非洲节点又确实收到了请求，问题不在单次 DNS 结果，而在不同地域、链路和解析视角不一致。 URL: /blog/articles/dns-5b7836f2.html
+- 日常问题排查-偶发性读数据不一致: 核心反常点：支付成功后主子数据偶发只有一边被读到，表面像原子性破坏，实际要回到事务边界、读路径和主从/缓存时序看。 URL: /blog/articles/post-a12062b0.html
+- 日常问题排查-MVCC和for update混用导致读数据不一致: 核心反常点：同一事务里更新 A/B 后，另一个事务只读到 A 的新值却读不到 B，新旧版本混在一起，根因在普通快照读与 for update 当前读混用。 URL: /blog/articles/mvcc-for-update-6ea5409f.html
+- 日常问题排查-改表时读数据不一致: 核心反常点：凌晨低峰期连续出现 NP 异常，流量不高却集中爆发，真正共同点是运维改表动作改变了读数据的一致性假设。 URL: /blog/articles/post-0abe94ca.html
+- 日常问题排查-连接突然全部关闭: 核心反常点：连接数涨到约 4.5W 后突然从高位跌到几百，并伴随大量报错，像应用雪崩，实际要从连接上限、端口/内核资源和关闭行为解释。 URL: /blog/articles/post-df9748ee.html
+- 日常问题排查-集群逐步失去响应: 核心反常点：应用节点不是同时宕掉，而是 BusyThread 从发布后持续增长直到逐台摘除，根因藏在 Guava Cache 异步加载和永远不会完成的 Future。 URL: /blog/articles/post-625093a1.html
+- 解Bug之路-应用999线升高: 核心反常点：查询服务 999 线升高后扩容反而更糟，Young GC 变慢只出现在部分机器，根因不是 JVM 容量，而是宿主机超卖和 cgroup CPU 记账造成的指标误导。 URL: /blog/articles/bug-999-3fc4d0f3.html
+- 日常问题排查-mq不消费: 核心反常点：应用启动后前 10 分钟正常，之后 MQ 开始固定堆积，重启又短暂恢复，关键矛盾是消费线程并非一开始失败，而是在运行一段时间后卡住。 URL: /blog/articles/mq-a6fe4c2d.html
+- 日常问题排查-读从库没有原子性？: 核心反常点：读从库时业务看起来读到了事务的一半结果，像主从复制破坏原子性，真正问题要区分从库回放顺序、隔离级别和业务观察点。 URL: /blog/articles/post-aba46ada.html
+- 解Bug之路-MySQL-Seconds_behind_master精度问题引发的思考: 核心反常点：不同从库看起来长期相差约 500ms 延迟，但网络并没有对应差异，真正的问题是 Seconds_behind_master 的秒级精度无法刻画毫秒级主从延迟。 URL: /blog/articles/bug-mysql-seconds-behind-master-f91a1925.html
+- 解Bug之路-ZooKeeper集群拒绝服务: 核心反常点：ZK Leader 宕机后剩余节点没有顺利选主，集群整体拒绝服务，异常不在单次宕机本身，而在 snapshot 耗时、initLimit 和历史数据膨胀共同放大故障。 URL: /blog/articles/bug-zookeeper-1b26955c.html
+- 日常问题排查-系统失去响应-Redis使用不当: 核心反常点：系统失去响应并伴随 Full GC 告警，看起来像 JVM 内存问题，但根因是 Redis 使用方式把应用拖进阻塞和内存压力。 URL: /blog/articles/redis-d4ca6a5a.html
+- 日常问题排查-请求偶尔超时-磁盘故障: 核心反常点：请求只是偶发超时且一会儿又恢复，应用层很难定位，真正异常是磁盘坏道/IO 卡顿在业务请求路径上被间歇性放大。 URL: /blog/articles/post-e443a4a8.html
+- 解Bug之路-主从切换"未成功"?: 核心反常点：数据库主从切换后大多数应用都切走了，个别应用连接却还留在老主库上，表面像切换失败，实际是连接生命周期和应用侧感知机制的问题。 URL: /blog/articles/bug-9ac0cd85.html
+- 解Bug之路-TCP使用不当引起的Bug: 核心反常点：应用以为每次 read 都能拿到完整业务包，线上却随机出现解析错乱，本质是把 TCP 流误当消息边界，粘包/拆包后触发协议解析异常。 URL: /blog/articles/bug-tcp-bug-d2a0b4b0.html
+- 解Bug之路-记一次线上请求偶尔变慢的排查: 核心反常点：数百万请求里只有少量超过 1s，GC、网络和业务日志都不像根因，最后靠日志规律发现慢请求和宿主机上的 Redis 活动存在隐蔽关联。 URL: /blog/articles/bug-6995f45c.html
+- 解Bug之路-Nginx 502 Bad Gateway: 核心反常点：后端应用压测无压力，但经过 Nginx 就 502 且 Nginx CPU 接近 100%，真正瓶颈不是业务处理能力，而是单 upstream 地址端口耗尽与 TIME_WAIT。 URL: /blog/articles/bug-nginx-502-bad-gateway-a95af6ef.html
+- 解Bug之路-中间件"SQL重复执行": 核心反常点：同一条 SQL 看起来被中间件重复执行，数据库日志和中间件日志互相打架，根因藏在多节点返回、引用计数和一个为排查打开的日志/缓存开关里。 URL: /blog/articles/bug-sql-64530c9f.html
+- 解Bug之路-记一次调用外网服务概率性失败问题的排查: 核心反常点：调用外网服务只是概率性失败，应用逻辑和服务端都不像有问题，真正异常藏在基础网络环境、路由/出口与联调链路的差异里。 URL: /blog/articles/bug-c0b96e67.html
+- 解Bug之路-记一次存储故障的排查过程: 核心反常点：业务请求偶发超时却很难联想到硬件，应用层现象稀奇古怪，最终指向存储硬件故障在分库分表链路中的间歇性放大。 URL: /blog/articles/bug-9db7e3e3.html
+- 解Bug之路-dubbo应用无法重连zookeeper: 核心反常点：网络恢复后 Dubbo 应用没有自动重连 Zookeeper，只能靠重启恢复，根因不是注册中心单点异常，而是低版本 ZK 客户端、session 过期和 DNS 缓存共同触发。 URL: /blog/articles/bug-dubbo-zookeeper-29ed9784.html
+- 日常问题排查-调用超时: 核心反常点：A 系统 5s 超时后 B 系统将近 8s 才打印收到请求，网络流量却很平稳，真正反常点是 B 还没开始处理请求就已经被 Full GC 和 swap-in 卡在入口之前。 URL: /blog/articles/post-ff1bd808.html
+- 日常问题排查-同应用同流量，为什么CPU.busy差了 5 倍？: 核心反常点：同应用同流量下部分机器 CPU.busy 高出 5 倍，接口 QPS、消息量和定时任务都对不上，最后发现是监控采样点位差异制造的假负载不均。 URL: /blog/articles/cpu-busy-5-7a232df0.html
+- 解Bug之路-dubbo流量上线时的非平滑问题: 核心反常点：应用每次发布后只有第一笔请求超时，后续全部正常，表面影响很小，实际暴露的是连接刚建立但还不可用、listen backlog 与 TCP 握手队列之间的时序问题。 URL: /blog/articles/bug-dubbo-cac59f88.html
+- 解Bug之路-记一次中间件导致的慢SQL排查过程: 核心反常点：慢 SQL 是主键查询/更新且只偶发几条，数据库本身并不慢，真正卡点在分库分表中间件 reactor 线程被字符串处理拖住。 URL: /blog/articles/bug-sql-f1e2ba02.html
+- 解Bug之路-记一次对端kernel宕机后的tcp行为: 核心反常点：对端机器宕机后同一类调用有的 821s 后 reset，有的 900s 后 timeout，异常时间并不随机，而是 TCP 重传、soTimeout 和内核恢复窗口共同决定。 URL: /blog/articles/bug-kernel-tcp-caa0286b.html
+- 解Bug之路-记一次JVM堆外内存泄露Bug的查找: 核心反常点：容器迁移后物理内存持续异常但堆内看不出同等增长，真正泄漏在堆外，需要从堆内对象线索反推并用物理内存模型定量闭环。 URL: /blog/articles/bug-jvm-bug-7e5879da.html
+- 解Bug之路-Druid的Bug: 核心反常点：应用网络 IO 异常看起来像业务协议问题，最后落到低版本 Druid 的已修复 Bug，说明基础组件版本差异也可能制造线上假象。 URL: /blog/articles/bug-druid-bug-da01435d.html
+- 解Bug之路-串包Bug: 核心反常点：Redis 被大量 hget/hset 拖垮后业务出现串包式异常，表面是数据错乱，实质仍是网络读写边界和协议解析假设被打破。 URL: /blog/articles/bug-bug-3ca3dec7.html
+- 解Bug之路-TCP使用不当: 核心反常点：业务把 TCP 当成一问一答的包协议使用，低流量时正常，高并发或长连接场景下就会暴露粘包/拆包导致的随机解析问题。 URL: /blog/articles/bug-tcp-7829e7d8.html
+
+## 分类
+- 解Bug之路: 21 篇
+- 日常问题排查: 14 篇
+- 高可用之路: 3 篇
+- MySQL: 10 篇
+- Prometheus: 6 篇
+- linux源码分析: 10 篇
+- 自己动手系列: 8 篇
+- 其它: 3 篇
+
+## 全量索引
+- /blog/

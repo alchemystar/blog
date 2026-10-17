@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="核心反常点：读从库时业务看起来读到了事务的一半结果，像主从复制破坏原子性，真正问题要区分从库回放顺序、隔离级别和业务观察点。">
+  <title>日常问题排查-读从库没有原子性？ - 苍天环绕的小世界</title>
+  <link rel="stylesheet" href="/blog/assets/site.css?v=20261007-contact-page">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="/blog/">苍天环绕的小世界</a>
+  <nav><a href="/blog/">首页</a><a class="nav-featured" href="/blog/featured.html">精品阅读</a><a href="/blog/#articles">文章</a><a href="/blog/contact.html">联系我</a></nav>
+</header>
+<main class="article-layout">
+  <aside class="article-aside">
+    <a class="back-link" href="/blog/">返回首页</a>
+    <div class="toc"><h2>目录</h2><a class="toc-level-1" href="#%E6%97%A5%E5%B8%B8%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5-%E8%AF%BB%E4%BB%8E%E5%BA%93%E6%B2%A1%E6%9C%89%E5%8E%9F%E5%AD%90%E6%80%A7">日常问题排查-读从库没有原子性？</a>
+<a class="toc-level-1" href="#%E5%89%8D%E8%A8%80">前言</a>
+<a class="toc-level-1" href="#bug%E7%8E%B0%E5%9C%BA">Bug现场</a>
+<a class="toc-level-1" href="#%E6%95%B0%E6%8D%AE%E5%BA%93%E6%8B%93%E6%89%91">数据库拓扑</a>
+<a class="toc-level-1" href="#%E7%9C%9F%E7%9B%B8%E5%A4%A7%E7%99%BD">真相大白</a>
+<a class="toc-level-1" href="#%E5%BA%94%E8%AF%A5%E6%80%8E%E4%B9%88%E5%81%9A">应该怎么做</a>
+<a class="toc-level-1" href="#%E6%80%BB%E7%BB%93">总结</a>
+<a class="toc-level-1" href="#%E5%85%AC%E4%BC%97%E5%8F%B7">公众号</a></div>
+  </aside>
+  <article class="article">
+    <header class="article-title">
+      <div class="meta"><span>日常问题排查</span><time>2022.11.13</time><span>2 min read</span></div>
+      <h1>日常问题排查-读从库没有原子性？</h1>
+      <p>核心反常点：读从库时业务看起来读到了事务的一半结果，像主从复制破坏原子性，真正问题要区分从库回放顺序、隔离级别和业务观察点。</p>
+    </header>
+    <div class="prose"><h1 id="%E6%97%A5%E5%B8%B8%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5-%E8%AF%BB%E4%BB%8E%E5%BA%93%E6%B2%A1%E6%9C%89%E5%8E%9F%E5%AD%90%E6%80%A7">日常问题排查-读从库没有原子性？</h1>
+<h1 id="%E5%89%8D%E8%A8%80">前言</h1>
+<p>日常问题排查系列都是一些简单问题排查。问题虽小，但经常遇到，了解这些问题，会让我们少走点弯路，提升效率。说不定有些问题你遇到过哦:)</p>
+<h1 id="bug%E7%8E%B0%E5%9C%BA">Bug现场</h1>
+<p>业务开发同学突然问了笔者一个问题，从库读会不会没有原子性？我下意识的反应怎么可能，只要是遵守MySQL主从Replication协议的原子性至少是能够保证的。但他们遇到了一个比较诡异的现象。如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/rc_and_rr/error_process.png" alt="" loading="lazy"></p>
+<p>这么一看确实像从库没有保证原子性。但这个明显有违背笔者的常识，这个问题背后肯定还有其它的因素没有挖掘到。</p>
+<h1 id="%E6%95%B0%E6%8D%AE%E5%BA%93%E6%8B%93%E6%89%91">数据库拓扑</h1>
+<p>于是笔者看了看这个库的拓扑，是一主两从的结构。如下图所示：</p>
+<p class="image-only"><img src="/blog/assets/source/image/rc_and_rr/rr_and_rc.png" alt="" loading="lazy"></p>
+<h1 id="%E7%9C%9F%E7%9B%B8%E5%A4%A7%E7%99%BD">真相大白</h1>
+<p>看到这个拓扑的那一刻笔者立马反应过来，是踩了一个主从延迟变种的坑。由于请求B的两条select是不在事务内的，而且都是select。这两很有可能路由到两个不同的从库，而这两个从库的主从延迟是不一样的。例如一个100ms，一个200ms。那么落到100ms从库的那条sql就会查到请求A的提交，而200ms从库的那条sql查不到。以致与错误的认为从库不保证原子性！</p>
+<p class="image-only"><img src="/blog/assets/source/image/rc_and_rr/read_commit.png" alt="" loading="lazy"></p>
+<h1 id="%E5%BA%94%E8%AF%A5%E6%80%8E%E4%B9%88%E5%81%9A">应该怎么做</h1>
+<p>遇到这种情况，其实我们所需要做的只是在某次请求中稳定的路由到某个特定的从库上面，这样就能保证原子性(要么能查到，要么都查不到)。</p>
+<p class="image-only"><img src="/blog/assets/source/image/rc_and_rr/normal_process.png" alt="" loading="lazy"></p>
+<p>如上图所示，一般在第一次请求之后，在threadLocal中打上相关粘性标签(SlaveA)，那么在这次线程请求中。后来的从库select都走SlaveA即可。这个选择逻辑可以通过重载数据源DataSource的getConnection逻辑来实现。</p>
+<h1 id="%E6%80%BB%E7%BB%93">总结</h1>
+<p>主从延迟是个非常常见的问题。最常见的是主库写入后读从库没有相应的数据，当然也有本文描述的这种看上去&quot;不符合原子性&quot;的变种。看似违背常识的背后可能有其它的隐变量(多从库不同延迟)。多挖掘一点问题现场的上下文信息就很容易揪出问题的根因。</p>
+<h1 id="%E5%85%AC%E4%BC%97%E5%8F%B7">公众号</h1>
+<p>关注笔者公众号，获取更多干货文章:</p>
+<p class="image-only"><img src="/blog/assets/source/image/remote/img2020.cnblogs.com/1411116-20200925101442007-492748732-09a30055aa06.png" alt="" loading="lazy"></p></div>
+    <nav class="prev-next"><a href="/blog/articles/post-e443a4a8.html"><small>上一篇</small><span>日常问题排查-请求偶尔超时-磁盘故障</span></a><a href="/blog/articles/post-ff1bd808.html"><small>下一篇</small><span>日常问题排查-调用超时</span></a></nav>
+  </article>
+  <aside class="article-related">
+    <h2>同类文章</h2><a href="/blog/articles/younggc-84c79a21.html">日常问题排查-Younggc突然变长</a>
+<a href="/blog/articles/post-ce618c61.html">日常问题排查-空闲一段时间再请求就超时</a>
+<a href="/blog/articles/dns-5b7836f2.html">日常问题排查-奇怪的DNS</a>
+<a href="/blog/articles/post-a12062b0.html">日常问题排查-偶发性读数据不一致</a>
+<a href="/blog/articles/mvcc-for-update-6ea5409f.html">日常问题排查-MVCC和for update混用导致读数据不一致</a>
+<a href="/blog/articles/post-0abe94ca.html">日常问题排查-改表时读数据不一致</a>
+<a href="/blog/articles/post-df9748ee.html">日常问题排查-连接突然全部关闭</a>
+<a href="/blog/articles/post-625093a1.html">日常问题排查-集群逐步失去响应</a>
+<a href="/blog/articles/mq-a6fe4c2d.html">日常问题排查-mq不消费</a>
+<a href="/blog/articles/redis-d4ca6a5a.html">日常问题排查-系统失去响应-Redis使用不当</a>
+<a href="/blog/articles/post-e443a4a8.html">日常问题排查-请求偶尔超时-磁盘故障</a>
+<a href="/blog/articles/post-ff1bd808.html">日常问题排查-调用超时</a>
+<a href="/blog/articles/cpu-busy-5-7a232df0.html">日常问题排查-同应用同流量，为什么CPU.busy差了 5 倍？</a>
+  </aside>
+</main>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, securityLevel: "loose" });
+</script>
+</body>
+</html>

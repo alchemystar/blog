@@ -1,0 +1,374 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="苍天环绕的小世界精品文章阅读路线">
+  <title>精品阅读 - 苍天环绕的小世界</title>
+  <link rel="stylesheet" href="/blog/assets/site.css?v=20261007-contact-page">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="/blog/">苍天环绕的小世界</a>
+  <nav><a href="/blog/">首页</a><a href="/blog/#articles">文章</a><a class="nav-featured" href="/blog/featured.html">精品阅读</a><a href="/blog/contact.html">联系我</a></nav>
+</header>
+<main class="guide-page">
+  <section class="guide-hero">
+    <p class="eyebrow">精选路线</p>
+    <h1>精品阅读</h1>
+    <p class="lead">如果只想快速理解这个博客的技术含金量，可以从这里开始。它把复杂线上排障、观测指标局限、Linux 源码、数据库内核和自己动手造轮子的文章串成几条主线。</p>
+    <div class="hero-stats">
+      <span><strong>30</strong> 篇精选</span>
+      <span><strong>5</strong> 条阅读线</span>
+    </div>
+  </section>
+  
+<section class="guide-section">
+  <div class="guide-section-head">
+    <h2>心像世界</h2>
+    <p>最能代表作者排障能力的文章：现象复杂、链路长、证据多，并且最终能把所有异常都解释到同一个模型里。</p>
+  </div>
+  <div class="guide-items">
+<a class="guide-item" href="/blog/articles/bug-nat-e95e7827.html">
+  <span class="guide-rank">01</span>
+  <span class="guide-copy">
+    <span class="guide-meta">解Bug之路 · 17 min read</span>
+    <strong>解Bug之路-NAT引发的性能瓶颈</strong>
+    <span class="guide-note">从抓包、LVS、TIME_WAIT 到内核版本差异，排障链路完整且反转多，是最适合作为门面的代表作。</span>
+    <span class="guide-anomaly">核心反常点：NAT 场景里的趋光性是一种自发的动力学模型，不同失败率通过表项寿命转化为选择压力，系统在没有健康感知的情况下自行完成流量迁移。</span>
+  </span>
+</a>
+
+<a class="guide-item" href="/blog/articles/bug-999-3fc4d0f3.html">
+  <span class="guide-rank">02</span>
+  <span class="guide-copy">
+    <span class="guide-meta">解Bug之路 · 9 min read</span>
+    <strong>解Bug之路-应用999线升高</strong>
+    <span class="guide-note">把应用 999、Young GC、cgroup throttling、宿主机超卖串成一条因果链，体现指标解读和内核视角。</span>
+    <span class="guide-anomaly">核心反常点：查询服务 999 线升高后扩容反而更糟，Young GC 变慢只出现在部分机器，根因不是 JVM 容量，而是宿主机超卖和 cgroup CPU 记账造成的指标误导。</span>
+  </span>
+</a>
+
+<a class="guide-item" href="/blog/articles/bug-dubbo-cac59f88.html">
+  <span class="guide-rank">03</span>
+  <span class="guide-copy">
+    <span class="guide-meta">解Bug之路 · 9 min read</span>
+    <strong>解Bug之路-dubbo流量上线时的非平滑问题</strong>
+    <span class="guide-note">从首笔请求超时一路追到 listen backlog 和 TCP 三次握手，问题小但底层解释非常漂亮。</span>
+    <span class="guide-anomaly">核心反常点：应用每次发布后只有第一笔请求超时，后续全部正常，表面影响很小，实际暴露的是连接刚建立但还不可用、listen backlog 与 TCP 握手队列之间的时序问题。</span>
+  </span>
+</a>
+
+<a class="guide-item" href="/blog/articles/bug-kernel-tcp-caa0286b.html">
+  <span class="guide-rank">04</span>
+  <span class="guide-copy">
+    <span class="guide-meta">解Bug之路 · 7 min read</span>
+    <strong>解Bug之路-记一次对端kernel宕机后的tcp行为</strong>
+    <span class="guide-note">难得的线上宕机场景，结合 soTimeOut、重传和 tcp_retries2 做定量分析，技术味很足。</span>
+    <span class="guide-anomaly">核心反常点：对端机器宕机后同一类调用有的 821s 后 reset，有的 900s 后 timeout，异常时间并不随机，而是 TCP 重传、soTimeout 和内核恢复窗口共同决定。</span>
+  </span>
+</a>
+
+<a class="guide-item" href="/blog/articles/bug-zookeeper-1b26955c.html">
+  <span class="guide-rank">05</span>
+  <span class="guide-copy">
+    <span class="guide-meta">解Bug之路 · 7 min read</span>
+    <strong>解Bug之路-ZooKeeper集群拒绝服务</strong>
+    <span class="guide-note">把 ZK 宕机、选主失败、snapshot 耗时和数据治理串起来，适合作为高可用事故分析样本。</span>
+    <span class="guide-anomaly">核心反常点：ZK Leader 宕机后剩余节点没有顺利选主，集群整体拒绝服务，异常不在单次宕机本身，而在 snapshot 耗时、initLimit 和历史数据膨胀共同放大故障。</span>
+  </span>
+</a>
+
+<a class="guide-item" href="/blog/articles/bug-jvm-bug-7e5879da.html">
+  <span class="guide-rank">06</span>
+  <span class="guide-copy">
+    <span class="guide-meta">解Bug之路 · 6 min read</span>
+    <strong>解Bug之路-记一次JVM堆外内存泄露Bug的查找</strong>
+    <span class="guide-note">从堆内泄漏线索反推堆外内存，并用物理内存模型做定量校验，是 JVM 排障里很有说服力的一篇。</span>
+    <span class="guide-anomaly">核心反常点：容器迁移后物理内存持续异常但堆内看不出同等增长，真正泄漏在堆外，需要从堆内对象线索反推并用物理内存模型定量闭环。</span>
+  </span>
+</a>
+
+<a class="guide-item" href="/blog/articles/bug-nginx-502-bad-gateway-a95af6ef.html">
+  <span class="guide-rank">07</span>
+  <span class="guide-copy">
+    <span class="guide-meta">解Bug之路 · 6 min read</span>
+    <strong>解Bug之路-Nginx 502 Bad Gateway</strong>
+    <span class="guide-note">用端口耗尽、TIME_WAIT 和 Nginx upstream 配置解释 502 与 CPU 飙高，短而锋利。</span>
+    <span class="guide-anomaly">核心反常点：后端应用压测无压力，但经过 Nginx 就 502 且 Nginx CPU 接近 100%，真正瓶颈不是业务处理能力，而是单 upstream 地址端口耗尽与 TIME_WAIT。</span>
+  </span>
+</a>
+
+<a class="guide-item" href="/blog/articles/bug-sql-f1e2ba02.html">
+  <span class="guide-rank">08</span>
+  <span class="guide-copy">
+    <span class="guide-meta">解Bug之路 · 7 min read</span>
+    <strong>解Bug之路-记一次中间件导致的慢SQL排查过程</strong>
+    <span class="guide-note">从偶发慢 SQL 的微小规律追到中间件 reactor 线程被卡住，体现日志对齐和系统边界意识。</span>
+    <span class="guide-anomaly">核心反常点：慢 SQL 是主键查询/更新且只偶发几条，数据库本身并不慢，真正卡点在分库分表中间件 reactor 线程被字符串处理拖住。</span>
+  </span>
+</a>
+
+<a class="guide-item" href="/blog/articles/bug-sql-64530c9f.html">
+  <span class="guide-rank">09</span>
+  <span class="guide-copy">
+    <span class="guide-meta">解Bug之路 · 5 min read</span>
+    <strong>解Bug之路-中间件&quot;SQL重复执行&quot;</strong>
+    <span class="guide-note">分库分表中间件稳定多年后暴露的 corner case，适合展示工程系统里隐藏状态与日志开关的风险。</span>
+    <span class="guide-anomaly">核心反常点：同一条 SQL 看起来被中间件重复执行，数据库日志和中间件日志互相打架，根因藏在多节点返回、引用计数和一个为排查打开的日志/缓存开关里。</span>
+  </span>
+</a>
+</div>
+</section>
+
+<section class="guide-section">
+  <div class="guide-section-head">
+    <h2>观测与指标</h2>
+    <p>这一组讨论监控指标的边界：指标不是事实本身，它会失明、失真，也会在精度和采样层面误导判断。</p>
+  </div>
+  <div class="guide-items">
+<a class="guide-item" href="/blog/articles/post-cc3a6927.html">
+  <span class="guide-rank">01</span>
+  <span class="guide-copy">
+    <span class="guide-meta">高可用之路 · 7 min read</span>
+    <strong>高可用之路-闲聊监控指标的局限</strong>
+    <span class="guide-note">不是单个 case，而是作者对监控指标本质的系统性思考，是理解后续观测文章的入口。</span>
+    
+  </span>
+</a>
+
+<a class="guide-item" href="/blog/articles/post-5bbe329f.html">
+  <span class="guide-rank">02</span>
+  <span class="guide-copy">
+    <span class="guide-meta">高可用之路 · 6 min read</span>
+    <strong>高可用之路·观测篇-指标失明</strong>
+    <span class="guide-note">把“问题发生但指标看不见”拆成可讨论的观测问题，适合 AI 抓住作者的高可用方法论。</span>
+    
+  </span>
+</a>
+
+<a class="guide-item" href="/blog/articles/mysql-seconds-behind-master-fceee9b1.html">
+  <span class="guide-rank">03</span>
+  <span class="guide-copy">
+    <span class="guide-meta">MySQL · 4 min read</span>
+    <strong>MySQL-Seconds_behind_master的精度误差</strong>
+    <span class="guide-note">用主从延迟指标的秒级精度误差说明：指标一旦超出表达范围，就会制造非常真实的假象。</span>
+    
+  </span>
+</a>
+
+<a class="guide-item" href="/blog/articles/cpu-busy-5-7a232df0.html">
+  <span class="guide-rank">04</span>
+  <span class="guide-copy">
+    <span class="guide-meta">日常问题排查 · 4 min read</span>
+    <strong>日常问题排查-同应用同流量，为什么CPU.busy差了 5 倍？</strong>
+    <span class="guide-note">从看似负载不均追到采样点位差异，是日常排查中很典型的“指标互相打架”案例。</span>
+    <span class="guide-anomaly">核心反常点：同应用同流量下部分机器 CPU.busy 高出 5 倍，接口 QPS、消息量和定时任务都对不上，最后发现是监控采样点位差异制造的假负载不均。</span>
+  </span>
+</a>
+
+<a class="guide-item" href="/blog/articles/post-ce618c61.html">
+  <span class="guide-rank">05</span>
+  <span class="guide-copy">
+    <span class="guide-meta">日常问题排查 · 5 min read</span>
+    <strong>日常问题排查-空闲一段时间再请求就超时</strong>
+    <span class="guide-note">用 LVS/NAT 超时解释低流量下的首笔请求超时，小问题背后有完整网络模型。</span>
+    <span class="guide-anomaly">核心反常点：低流量时空闲后的第一笔请求超时，高流量反而正常，根因不是服务端处理慢，而是 NAT/LVS 空闲连接超时与客户端连接复用冲突。</span>
+  </span>
+</a>
+</div>
+</section>
+
+<section class="guide-section">
+  <div class="guide-section-head">
+    <h2>Linux 与 TCP 源码</h2>
+    <p>这些文章适合展示底层功底：不是只会调参数，而是能从应用现象一路落到 Linux/TCP 的实现细节。</p>
+  </div>
+  <div class="guide-items">
+<a class="guide-item" href="/blog/articles/linux-epoll-8d1f5086.html">
+  <span class="guide-rank">01</span>
+  <span class="guide-copy">
+    <span class="guide-meta">linux源码分析 · 8 min read</span>
+    <strong>从linux源码看epoll</strong>
+    <span class="guide-note">篇幅长、结构完整，从 epoll 的数据结构到 ready 链表，适合作为 Linux 源码阅读能力展示。</span>
+    
+  </span>
+</a>
+
+<a class="guide-item" href="/blog/articles/linux-socket-tcp-timeout-b3547af3.html">
+  <span class="guide-rank">02</span>
+  <span class="guide-copy">
+    <span class="guide-meta">linux源码分析 · 8 min read</span>
+    <strong>从linux源码看socket(tcp)的timeout</strong>
+    <span class="guide-note">系统梳理阻塞 socket 的各种超时行为，和线上宕机/网络异常排查强相关。</span>
+    
+  </span>
+</a>
+
+<a class="guide-item" href="/blog/articles/linux-socket-close-d72a4843.html">
+  <span class="guide-rank">03</span>
+  <span class="guide-copy">
+    <span class="guide-meta">linux源码分析 · 7 min read</span>
+    <strong>从linux源码看socket的close</strong>
+    <span class="guide-note">把四次挥手、状态机和 close 调用路径对应起来，能补齐很多 TCP 问题的底层直觉。</span>
+    
+  </span>
+</a>
+
+<a class="guide-item" href="/blog/articles/linux-time-wait-4a2c9b4c.html">
+  <span class="guide-rank">04</span>
+  <span class="guide-copy">
+    <span class="guide-meta">linux源码分析 · 6 min read</span>
+    <strong>从Linux源码看TIME_WAIT状态的持续时间</strong>
+    <span class="guide-note">TIME_WAIT 是多个线上问题的关键背景，这篇把持续时间和实现路径讲得很细。</span>
+    
+  </span>
+</a>
+
+<a class="guide-item" href="/blog/articles/linux-socket-tcp-listen-d1e99aff.html">
+  <span class="guide-rank">05</span>
+  <span class="guide-copy">
+    <span class="guide-meta">linux源码分析 · 5 min read</span>
+    <strong>从Linux源码看Socket(TCP)的listen及连接队列</strong>
+    <span class="guide-note">理解半连接、全连接队列和 backlog，是 dubbo 非平滑上线等问题的底层拼图。</span>
+    
+  </span>
+</a>
+
+<a class="guide-item" href="/blog/articles/linux-tcp-304f12e7.html">
+  <span class="guide-rank">06</span>
+  <span class="guide-copy">
+    <span class="guide-meta">linux源码分析 · 6 min read</span>
+    <strong>Linux上TCP的几个内核参数调优</strong>
+    <span class="guide-note">从线上经验回到内核参数，实用性强，适合作为源码理解落地到生产调优的桥。</span>
+    
+  </span>
+</a>
+</div>
+</section>
+
+<section class="guide-section">
+  <div class="guide-section-head">
+    <h2>数据库与监控组件</h2>
+    <p>从 MySQL 到 Prometheus，重点是组件内部机制，而不是停留在使用手册层面。</p>
+  </div>
+  <div class="guide-items">
+<a class="guide-item" href="/blog/articles/mysql-mvcc-f01bb5cb.html">
+  <span class="guide-rank">01</span>
+  <span class="guide-copy">
+    <span class="guide-meta">MySQL · 5 min read</span>
+    <strong>MySQL多版本并发控制机制(MVCC)-源码浅析</strong>
+    <span class="guide-note">用 debug MySQL 的方式解释 read view、undo log 和可见性，是 MySQL 系列里最值得优先读的一篇。</span>
+    
+  </span>
+</a>
+
+<a class="guide-item" href="/blog/articles/prometheus-c5470827.html">
+  <span class="guide-rank">02</span>
+  <span class="guide-copy">
+    <span class="guide-meta">Prometheus · 4 min read</span>
+    <strong>Prometheus时序数据库-内存中的存储结构</strong>
+    <span class="guide-note">从 Gorilla、memSeries 到倒排索引，适合作为 Prometheus 源码系列入口。</span>
+    
+  </span>
+</a>
+
+<a class="guide-item" href="/blog/articles/prometheus-0f36c4b7.html">
+  <span class="guide-rank">03</span>
+  <span class="guide-copy">
+    <span class="guide-meta">Prometheus · 4 min read</span>
+    <strong>Prometheus时序数据库-磁盘中的存储结构</strong>
+    <span class="guide-note">把 block、chunks、index、posting 等磁盘结构拆开讲，和内存篇互为上下文。</span>
+    
+  </span>
+</a>
+
+<a class="guide-item" href="/blog/articles/prometheus-d6d7222d.html">
+  <span class="guide-rank">04</span>
+  <span class="guide-copy">
+    <span class="guide-meta">Prometheus · 4 min read</span>
+    <strong>Prometheus时序数据库-数据的查询</strong>
+    <span class="guide-note">用一条 PromQL 串起 select、populateSeries、evaluator 和聚合过程，读完能建立查询执行图景。</span>
+    
+  </span>
+</a>
+
+<a class="guide-item" href="/blog/articles/mysql-io-b7cf67b1.html">
+  <span class="guide-rank">05</span>
+  <span class="guide-copy">
+    <span class="guide-meta">MySQL · 3 min read</span>
+    <strong>从MySQL源码看其网络IO模型</strong>
+    <span class="guide-note">从 mysqld 入口看 MySQL 的网络 IO 模型，适合展示作者读服务端源码的切入方式。</span>
+    
+  </span>
+</a>
+</div>
+</section>
+
+<section class="guide-section">
+  <div class="guide-section-head">
+    <h2>自己动手与系统设计</h2>
+    <p>这一组不是单纯排障，而是把协议、存储、代理、同步和跨集群通信真正做出来。</p>
+  </div>
+  <div class="guide-items">
+<a class="guide-item" href="/blog/articles/c-dbproxy-d9da67e9.html">
+  <span class="guide-rank">01</span>
+  <span class="guide-copy">
+    <span class="guide-meta">自己动手系列 · 7 min read</span>
+    <strong>用C语言撸了个DBProxy</strong>
+    <span class="guide-note">从 reactor、epoll、内存池到 MySQL 协议，最能体现作者“读源码后自己造一遍”的气质。</span>
+    
+  </span>
+</a>
+
+<a class="guide-item" href="/blog/articles/sql-64ebb2ab.html">
+  <span class="guide-rank">02</span>
+  <span class="guide-copy">
+    <span class="guide-meta">自己动手系列 · 6 min read</span>
+    <strong>自己动手写SQL执行引擎</strong>
+    <span class="guide-note">覆盖 MySQL 协议、SQL parse、join、B+Tree、buffer manager、WAL，是数据库轮子的核心展示。</span>
+    
+  </span>
+</a>
+
+<a class="guide-item" href="/blog/articles/post-a64c35eb.html">
+  <span class="guide-rank">03</span>
+  <span class="guide-copy">
+    <span class="guide-meta">自己动手系列 · 7 min read</span>
+    <strong>分库分表中间件的高可用实践</strong>
+    <span class="guide-note">把中间件宕机、发布、下线、连接创建等问题放到高可用设计里讨论，工程含量很高。</span>
+    
+  </span>
+</a>
+
+<a class="guide-item" href="/blog/articles/dubbo-af6bf6dd.html">
+  <span class="guide-rank">04</span>
+  <span class="guide-copy">
+    <span class="guide-meta">自己动手系列 · 5 min read</span>
+    <strong>用隧道协议实现不同dubbo集群间的透明通信</strong>
+    <span class="guide-note">把网络隔离、注册中心隔离和透明 RPC 调用做成线上可运行方案，系统设计味道很强。</span>
+    
+  </span>
+</a>
+
+<a class="guide-item" href="/blog/articles/dpvs-session-2f0618af.html">
+  <span class="guide-rank">05</span>
+  <span class="guide-copy">
+    <span class="guide-meta">自己动手系列 · 4 min read</span>
+    <strong>给DPVS加上SESSION同步功能</strong>
+    <span class="guide-note">在 DPVS/DPDK 场景下做状态同步，低层网络兴趣和工程动手能力都很明显。</span>
+    
+  </span>
+</a>
+</div>
+</section>
+
+</main>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, securityLevel: "loose" });
+</script>
+</body>
+</html>

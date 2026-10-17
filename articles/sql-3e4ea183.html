@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="本篇Blog在总体层面介绍了SQL查询引擎Rider的功能及设计，其细节部分将会在后面的篇章中一一道来。 笔者在实际工作中经常需要解析文件，每次文件稍有变化，都得拷贝粘贴一堆代码。 于是就想着能不能做一个通用的服务，通过配置的方式解析文件。 最通用的方法就是自己定义一个文件描述语言，用语言去描述文件...">
+  <title>自己动手写SQL查询引擎-总篇 - 苍天环绕的小世界</title>
+  <link rel="stylesheet" href="/blog/assets/site.css?v=20261007-contact-page">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="/blog/">苍天环绕的小世界</a>
+  <nav><a href="/blog/">首页</a><a class="nav-featured" href="/blog/featured.html">精品阅读</a><a href="/blog/#articles">文章</a><a href="/blog/contact.html">联系我</a></nav>
+</header>
+<main class="article-layout">
+  <aside class="article-aside">
+    <a class="back-link" href="/blog/">返回首页</a>
+    <div class="toc"><h2>目录</h2><a class="toc-level-1" href="#%E8%87%AA%E5%B7%B1%E5%8A%A8%E6%89%8B%E5%86%99sql%E6%9F%A5%E8%AF%A2%E5%BC%95%E6%93%8E-%E6%80%BB%E7%AF%87">自己动手写SQL查询引擎-总篇</a>
+<a class="toc-level-2" href="#%E8%B5%B7%E5%9B%A0">起因</a>
+<a class="toc-level-3" href="#%E9%85%8D%E7%BD%AE%E9%80%9A%E7%94%A8">配置通用</a>
+<a class="toc-level-3" href="#%E5%9F%BA%E4%BA%8Esql">基于SQL</a>
+<a class="toc-level-3" href="#rider%E4%BB%A3%E7%A0%81%E7%81%B5%E6%84%9F">Rider代码灵感</a>
+<a class="toc-level-2" href="#sql%E6%9F%A5%E8%AF%A2%E5%BC%95%E6%93%8Erider">SQL查询引擎Rider</a>
+<a class="toc-level-2" href="#rider%E6%80%BB%E4%BD%93%E8%AE%BE%E8%AE%A1">Rider总体设计</a>
+<a class="toc-level-2" href="#rider%E6%9F%A5%E8%AF%A2%E8%A1%A8%E7%9A%84%E5%8E%9F%E7%90%86">Rider查询表的原理</a>
+<a class="toc-level-2" href="#rider%E6%96%87%E4%BB%B6%E9%85%8D%E7%BD%AE%E7%9A%84%E9%80%9A%E7%94%A8%E6%80%A7">Rider文件配置的通用性</a>
+<a class="toc-level-3" href="#%E6%96%87%E4%BB%B6%E5%88%97%E4%BD%8D%E7%BD%AE%E4%B8%8D%E5%AE%9A">文件列位置不定</a>
+<a class="toc-level-2" href="#%E6%96%87%E4%BB%B6%E6%A0%BC%E5%BC%8F%E4%B8%8D%E5%9B%BA%E5%AE%9A">文件格式不固定</a>
+<a class="toc-level-2" href="#rider%E6%80%A7%E8%83%BD">Rider性能</a>
+<a class="toc-level-2" href="#rider%E6%88%AA%E5%9B%BE">Rider截图</a>
+<a class="toc-level-2" href="#github%E9%93%BE%E6%8E%A5">github链接</a>
+<a class="toc-level-2" href="#%E7%A0%81%E4%BA%91%E9%93%BE%E6%8E%A5">码云链接</a></div>
+  </aside>
+  <article class="article">
+    <header class="article-title">
+      <div class="meta"><span>自己动手系列</span><time>2017.03.23</time><span>2 min read</span></div>
+      <h1>自己动手写SQL查询引擎-总篇</h1>
+      <p>本篇Blog在总体层面介绍了SQL查询引擎Rider的功能及设计，其细节部分将会在后面的篇章中一一道来。 笔者在实际工作中经常需要解析文件，每次文件稍有变化，都得拷贝粘贴一堆代码。 于是就想着能不能做一个通用的服务，通过配置的方式解析文件。 最通用的方法就是自己定义一个文件描述语言，用语言去描述文件...</p>
+    </header>
+    <div class="prose"><h1 id="%E8%87%AA%E5%B7%B1%E5%8A%A8%E6%89%8B%E5%86%99sql%E6%9F%A5%E8%AF%A2%E5%BC%95%E6%93%8E-%E6%80%BB%E7%AF%87">自己动手写SQL查询引擎-总篇</h1>
+<p>本篇Blog在总体层面介绍了SQL查询引擎Rider的功能及设计，其细节部分将会在后面的篇章中一一道来。</p>
+<h2 id="%E8%B5%B7%E5%9B%A0">起因</h2>
+<p>笔者在实际工作中经常需要解析文件，每次文件稍有变化，都得拷贝粘贴一堆代码。 于是就想着能不能做一个通用的服务，通过配置的方式解析文件。</p>
+<h3 id="%E9%85%8D%E7%BD%AE%E9%80%9A%E7%94%A8">配置通用</h3>
+<p>最通用的方法就是自己定义一个文件描述语言，用语言去描述文件的组织结构。但如果自己定义一套新的语法，学习成本则太高。</p>
+<h3 id="%E5%9F%BA%E4%BA%8Esql">基于SQL</h3>
+<p>于是就想到了数据库，数据库是通过create table来表示文件格式的，且通过sql来查询底层数据。 这个create table和select操作和我的需求match,就这样SQL查询引擎Rider诞生了。</p>
+<h3 id="rider%E4%BB%A3%E7%A0%81%E7%81%B5%E6%84%9F">Rider代码灵感</h3>
+<p>Rider借鉴了不少项目的代码，例如MySql协议部分借鉴了Corbar。 Sql解析部分借鉴了h2database,derby等。 文件解析部分源于笔者写的大部分文件解析业务代码。 在此向上述优秀的开源代码致敬。</p>
+<h2 id="sql%E6%9F%A5%E8%AF%A2%E5%BC%95%E6%93%8Erider">SQL查询引擎Rider</h2>
+<p>Rider是一个基于Netty通讯框架的纯java写的Server,其不依赖其它任何服务。其主要功能如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/rider/rider_func.png" alt="codegen" loading="lazy"></p>
+<p>(1)Rider基于MySql协议和用户交互，用户可以使用mysqlClient、jdbc以及odbc等对Rider发送SQL命令 (2)Rider支持select join where condition、create table等语法 (3)Rider支持MyBatis</p>
+<h2 id="rider%E6%80%BB%E4%BD%93%E8%AE%BE%E8%AE%A1">Rider总体设计</h2>
+<p class="image-only"><img src="/blog/assets/source/image/rider/rider_archetype.png" alt="codegen" loading="lazy"></p>
+<p>这里Rider主要分四层: (1)MySql协议层，负责通过MySql协议与用户的交互，详情可见: https://my.oschina.net/alchemystar/blog/834150 (2)Sql解析层:负责对select以及create table等语法的解析 (3)Access层:提供游标Cursor这个概念，供Sql解析层去遍历记录 (4)Storage层:对很多中文件格式进行解析，统一封装成游标Cursor给上层调用, 当前Storage还包含了视图的概念，这是Rider另一个特性，在后面的篇章中阐述。</p>
+<h2 id="rider%E6%9F%A5%E8%AF%A2%E8%A1%A8%E7%9A%84%E5%8E%9F%E7%90%86">Rider查询表的原理</h2>
+<p>下图是Rider查询表的原理，</p>
+<p class="image-only"><img src="/blog/assets/source/image/rider/rider_execute.png" alt="codegen" loading="lazy"></p>
+<p>Rider查询表的原理是通过将文件中所有记录读取出来并通过where或者join条件进行遍历，从而筛选出对应的记录。 对于多表查询，则是通过将多个文件中的记录进行笛卡尔积的便利来筛选记录。</p>
+<h2 id="rider%E6%96%87%E4%BB%B6%E9%85%8D%E7%BD%AE%E7%9A%84%E9%80%9A%E7%94%A8%E6%80%A7">Rider文件配置的通用性</h2>
+<h3 id="%E6%96%87%E4%BB%B6%E5%88%97%E4%BD%8D%E7%BD%AE%E4%B8%8D%E5%AE%9A">文件列位置不定</h3>
+<p>详细描述:文件A,文件B包含相同的数据，只是列的位置不一样，例如: 文件A:</p>
+<pre><code class="language-">1,lancer,lancer_comment   
+2,rider,rider_comment</code></pre>
+<p>文件B:</p>
+<pre><code class="language-">1.lancer_comment,lancer    
+2,rider,rider_comment  </code></pre>
+<p>在Rider中只需要在不同的schema中建立两张相同的表t_test,就可以在应用端代码复用，底层细节的Rider全包了。</p>
+<pre><code class="language-">use schemaA;
+create table t_test( 
+  id BIGINT comment &#x27;id test &#x27;, 
+  name VARCHAR comment &#x27;name&#x27;,
+  extension VARCHAR comment &#x27;extension&#x27; 
+)Engine=&#x27;archer&#x27; SEP=&#x27;,&#x27; comment=&#x27;just for test&#x27;;
+use schemaB;
+ create table t_test( 
+  id BIGINT comment &#x27;id test &#x27;, 
+  extension VARCHAR comment &#x27;extension&#x27; /*此处列位置调整*/
+  name VARCHAR comment &#x27;name&#x27;,
+)Engine=&#x27;archer&#x27; SEP=&#x27;,&#x27; comment=&#x27;just for test&#x27;</code></pre>
+<p>这样客户端就可以不考虑文件列的位置了。</p>
+<h2 id="%E6%96%87%E4%BB%B6%E6%A0%BC%E5%BC%8F%E4%B8%8D%E5%9B%BA%E5%AE%9A">文件格式不固定</h2>
+<p>考虑到三个文件，文件A、文件B以及文件C 文件A,以,分隔:</p>
+<pre><code class="language-">1,lancer,lancer_comment   
+2,rider,rider_comment</code></pre>
+<p>文件B,以|分隔:</p>
+<pre><code class="language-">1|lancer|lancer_comment   
+2|rider|rider_comment</code></pre>
+<p>文件C,XLSX格式</p>
+<pre><code class="language-">use schemaA;
+create table t_test( 
+  id BIGINT comment &#x27;id test &#x27;, 
+  name VARCHAR comment &#x27;name&#x27;,
+  extension VARCHAR comment &#x27;extension&#x27; 
+)Engine=&#x27;archer&#x27; SEP=&#x27;,&#x27; comment=&#x27;just for test&#x27;;
+use schemaB;
+ create table t_test( 
+  id BIGINT comment &#x27;id test &#x27;, 
+  name VARCHAR comment &#x27;name&#x27;,
+  extension VARCHAR comment &#x27;extension&#x27; 
+)Engine=&#x27;archer&#x27; SEP=&#x27;|&#x27; /*此处分隔符调整为|*/  comment=&#x27;just for test&#x27;
+use schemaC;
+create table t_test( 
+  id BIGINT comment &#x27;id test &#x27;, 
+  name VARCHAR comment &#x27;name&#x27;,
+  extension VARCHAR comment &#x27;extension&#x27; 
+)Engine=&#x27;XLSX&#x27;/*此处引擎调整为xlsx*/;</code></pre>
+<p>这样客户端也不需要考虑文件格式了。 如果上述不直观的话，可以如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/rider/rider_file.png" alt="codegen" loading="lazy"></p>
+<h2 id="rider%E6%80%A7%E8%83%BD">Rider性能</h2>
+<p>文件解析速度4W行/s,其只和java本身文件IO性能相关。</p>
+<h2 id="rider%E6%88%AA%E5%9B%BE">Rider截图</h2>
+<p class="image-only"><img src="/blog/assets/source/image/rider/rider_example.png" alt="codegen" loading="lazy"></p>
+<h2 id="github%E9%93%BE%E6%8E%A5">github链接</h2>
+<p>https://github.com/alchemystar/Rider</p>
+<h2 id="%E7%A0%81%E4%BA%91%E9%93%BE%E6%8E%A5">码云链接</h2>
+<p>http://git.oschina.net/alchemystar/Rider</p></div>
+    <nav class="prev-next"><a href="/blog/articles/sql-64ebb2ab.html"><small>上一篇</small><span>自己动手写SQL执行引擎</span></a><a href="/blog/articles/bug-druid-bug-da01435d.html"><small>下一篇</small><span>解Bug之路-Druid的Bug</span></a></nav>
+  </article>
+  <aside class="article-related">
+    <h2>同类文章</h2><a href="/blog/articles/dubbo-af6bf6dd.html">用隧道协议实现不同dubbo集群间的透明通信</a>
+<a href="/blog/articles/dpvs-session-2f0618af.html">给DPVS加上SESSION同步功能</a>
+<a href="/blog/articles/sql-64ebb2ab.html">自己动手写SQL执行引擎</a>
+<a href="/blog/articles/post-a64c35eb.html">分库分表中间件的高可用实践</a>
+<a href="/blog/articles/c-dbproxy-d9da67e9.html">用C语言撸了个DBProxy</a>
+<a href="/blog/articles/mysql-79d92f6a.html">MySql之自动同步表结构</a>
+<a href="/blog/articles/mysql-crud-929680b4.html">MySql之自动生成CRUD代码</a>
+  </aside>
+</main>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, securityLevel: "loose" });
+</script>
+</body>
+</html>

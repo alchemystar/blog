@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="核心反常点：A 系统 5s 超时后 B 系统将近 8s 才打印收到请求，网络流量却很平稳，真正反常点是 B 还没开始处理请求就已经被 Full GC 和 swap-in 卡在入口之前。">
+  <title>日常问题排查-调用超时 - 苍天环绕的小世界</title>
+  <link rel="stylesheet" href="/blog/assets/site.css?v=20261007-contact-page">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="/blog/">苍天环绕的小世界</a>
+  <nav><a href="/blog/">首页</a><a class="nav-featured" href="/blog/featured.html">精品阅读</a><a href="/blog/#articles">文章</a><a href="/blog/contact.html">联系我</a></nav>
+</header>
+<main class="article-layout">
+  <aside class="article-aside">
+    <a class="back-link" href="/blog/">返回首页</a>
+    <div class="toc"><h2>目录</h2><a class="toc-level-1" href="#%E6%97%A5%E5%B8%B8%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5-%E8%B0%83%E7%94%A8%E8%B6%85%E6%97%B6">日常问题排查-调用超时</a>
+<a class="toc-level-2" href="#%E5%89%8D%E8%A8%80">前言</a>
+<a class="toc-level-2" href="#bug%E7%8E%B0%E5%9C%BA">Bug现场</a>
+<a class="toc-level-2" href="#%E5%BC%80%E5%A7%8B%E6%8E%92%E6%9F%A5">开始排查</a>
+<a class="toc-level-2" href="#%E7%BD%91%E7%BB%9Ccheck">网络check</a>
+<a class="toc-level-2" href="#full-gc">Full GC</a>
+<a class="toc-level-2" href="#%E4%B8%BA%E4%BB%80%E4%B9%88%E8%BF%99%E4%B9%88%E6%85%A2">为什么这么慢</a>
+<a class="toc-level-2" href="#%E4%B8%BA%E4%BB%80%E4%B9%88%E4%BC%9A%E6%9C%89swap">为什么会有swap</a>
+<a class="toc-level-2" href="#%E5%8F%A6%E4%B8%80%E4%B8%AA%E6%9C%BA%E6%88%BF%E6%B2%A1%E5%87%BA%E9%97%AE%E9%A2%98">另一个机房没出问题</a>
+<a class="toc-level-2" href="#%E6%80%BB%E7%BB%93">总结</a></div>
+  </aside>
+  <article class="article">
+    <header class="article-title">
+      <div class="meta"><span>日常问题排查</span><time>2026.08.25</time><span>3 min read</span></div>
+      <h1>日常问题排查-调用超时</h1>
+      <p>核心反常点：A 系统 5s 超时后 B 系统将近 8s 才打印收到请求，网络流量却很平稳，真正反常点是 B 还没开始处理请求就已经被 Full GC 和 swap-in 卡在入口之前。</p>
+    </header>
+    <div class="prose"><h1 id="%E6%97%A5%E5%B8%B8%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5-%E8%B0%83%E7%94%A8%E8%B6%85%E6%97%B6">日常问题排查-调用超时</h1>
+<h2 id="%E5%89%8D%E8%A8%80">前言</h2>
+<p>日常问题排查系列都是一些简单问题排查，笔者将在这里介绍一些排查Bug的简单技巧，同时顺便积累素材^_^。</p>
+<h2 id="bug%E7%8E%B0%E5%9C%BA">Bug现场</h2>
+<p>这次的Bug是大家喜闻乐见的调用超时。即A调用B超过了5s</p>
+<p class="image-only"><img src="/blog/assets/source/image/daily_bug/timeout_for_gc/timeout.png" alt="codegen" loading="lazy"></p>
+<p>搜索一下日志，发现A系统在发出5s后超时。B系统在将近8s后才收到请求，也就是说B系统还没开始处理，A系统就超时了。</p>
+<p class="image-only"><img src="/blog/assets/source/image/daily_bug/timeout_for_gc/already_timeout.png" alt="codegen" loading="lazy"></p>
+<h2 id="%E5%BC%80%E5%A7%8B%E6%8E%92%E6%9F%A5">开始排查</h2>
+<p>那么这5秒钟时间到底消失在哪里呢？有3个可能的点:</p>
+<pre><code class="language-">1)A日志打点到真正发出请求包
+2)网络上
+3)B真正接收请求包到B日志打点。</code></pre>
+<p class="image-only"><img src="/blog/assets/source/image/daily_bug/timeout_for_gc/three_point.png" alt="codegen" loading="lazy"></p>
+<h2 id="%E7%BD%91%E7%BB%9Ccheck">网络check</h2>
+<p>首先笔者检查了当时此机器的Net Traffic,发现非常平稳，考虑不是网络的锅。</p>
+<h2 id="full-gc">Full GC</h2>
+<p>对于Java应用，第二个考虑的点应该是GC,毕竟是Stop The World!笔者于是翻了下对应 A/B系统两台 发现A系统okay,B系统在当时有Full GC，而且长达6s:</p>
+<p class="image-only"><img src="/blog/assets/source/image/daily_bug/timeout_for_gc/b_gc.png" alt="codegen" loading="lazy"></p>
+<p>既然监控到了，那么问题基本就是B系统的Full GC了，这个长达6s的full gc让B系统5s后才打印出请求。可是这又引入了一个新的问题，为什么一次Full GC能达到6s之巨。</p>
+<h2 id="%E4%B8%BA%E4%BB%80%E4%B9%88%E8%BF%99%E4%B9%88%E6%85%A2">为什么这么慢</h2>
+<p>观察监控，笔者发现Full GC有时候快有时候慢。翻出对应6s的那条gc监控日志。</p>
+<pre><code class="language-">B系统
+[Full GC(Metadata GC Thresold) ...... (class unloading,5.5285249 secs]......[Times: user=0.85 sys=0.07 real=6.26 secs]
+class unloading...</code></pre>
+<p>发现class unloading竟然会有将近5s。再进一步用awk过滤，最高有10s的,最短有0.1s的，而他们回收的内存大小确差不多。正常Full GC应该不会有这么久,那个0.1s才感觉是正常的，难道当时机器有什么事情发生?带着疑问，笔者继续观察监控曲线，看看能不能找到些蛛丝马迹,找到当时的时间点，发现:</p>
+<p class="image-only"><img src="/blog/assets/source/image/daily_bug/timeout_for_gc/swap_slow.png" alt="codegen" loading="lazy"></p>
+<p>GC慢的时候，对应机器内存的swap in很高。紧接着找了其它慢的Full GC。发现非常有规律，只要swap in很高Full GC就慢！ 于是笔者，就尝试着搜索了一下</p>
+<pre><code class="language-">https://blogs.oracle.com/poonam/long-class-unloading-pauses-with-jdk8 </code></pre>
+<p>发现，官方也发现了这个问题，并给予了解释。</p>
+<h2 id="%E4%B8%BA%E4%BB%80%E4%B9%88%E4%BC%9A%E6%9C%89swap">为什么会有swap</h2>
+<p>实际上对应机器的内存使用率并不高，一共8G的内存，JVM只占用到了4G左右。但swap的逻辑并仅仅是内存吃紧了才使用swap分区。如果有一块内存长期不用，也有可能被交换到swap分区。 例如，JVM的class信息，如果一个class MetaData仅仅是存在那里，并不被用到的话。 可能被kernel扔到swap里面。但这时候在GC可达性分析的时候，又会去访问这个MetaData信息，就导致虽然内存利用率不高，但依旧发生使用swap导致慢的情况！</p>
+<p class="image-only"><img src="/blog/assets/source/image/daily_bug/timeout_for_gc/swap_in_out.png" alt="codegen" loading="lazy"></p>
+<p>但是swap里面到底是什么内容，是不是和jvm相关就很难知晓了。所以看上去是概率上出现GC慢的问题。</p>
+<h2 id="%E5%8F%A6%E4%B8%80%E4%B8%AA%E6%9C%BA%E6%88%BF%E6%B2%A1%E5%87%BA%E9%97%AE%E9%A2%98">另一个机房没出问题</h2>
+<p>这时候巧的是，业务开发向笔者反映，另一个机房的相同应用确不会出现此问题。捞了下对应日志，发现其class unloading只有0.9s左右。笔者观察了下，发现另一个机房的机器并没有用swap。于是笔者比较了一下两个机房关于swap相关的内核参数:</p>
+<pre><code class="language-">GC慢机器 cat /proc/sys/vm/swappiness 60
+GC正常机器 cat /proc/sys/vm/swappiness 1</code></pre>
+<p>发现我们新建机房的,我们SA已经预先把swappiness调成了1，意思是告诉kernel尽量不要使用swap，这样就不会有这种swap导致的坑爹问题了。</p>
+<h2 id="%E6%80%BB%E7%BB%93">总结</h2>
+<p>对于非内存瓶颈的应用，我们应该基于实际情况决定是否把swap禁用掉，以免因swap造成卡顿！另外， 对于一个偶发性的问题，我们应该通过监控等手段去寻找规律，这样就很容易找到突破点。</p></div>
+    <nav class="prev-next"><a href="/blog/articles/post-aba46ada.html"><small>上一篇</small><span>日常问题排查-读从库没有原子性？</span></a><a href="/blog/articles/post-df9748ee.html"><small>下一篇</small><span>日常问题排查-连接突然全部关闭</span></a></nav>
+  </article>
+  <aside class="article-related">
+    <h2>同类文章</h2><a href="/blog/articles/younggc-84c79a21.html">日常问题排查-Younggc突然变长</a>
+<a href="/blog/articles/post-ce618c61.html">日常问题排查-空闲一段时间再请求就超时</a>
+<a href="/blog/articles/dns-5b7836f2.html">日常问题排查-奇怪的DNS</a>
+<a href="/blog/articles/post-a12062b0.html">日常问题排查-偶发性读数据不一致</a>
+<a href="/blog/articles/mvcc-for-update-6ea5409f.html">日常问题排查-MVCC和for update混用导致读数据不一致</a>
+<a href="/blog/articles/post-0abe94ca.html">日常问题排查-改表时读数据不一致</a>
+<a href="/blog/articles/post-df9748ee.html">日常问题排查-连接突然全部关闭</a>
+<a href="/blog/articles/post-625093a1.html">日常问题排查-集群逐步失去响应</a>
+<a href="/blog/articles/mq-a6fe4c2d.html">日常问题排查-mq不消费</a>
+<a href="/blog/articles/post-aba46ada.html">日常问题排查-读从库没有原子性？</a>
+<a href="/blog/articles/redis-d4ca6a5a.html">日常问题排查-系统失去响应-Redis使用不当</a>
+<a href="/blog/articles/post-e443a4a8.html">日常问题排查-请求偶尔超时-磁盘故障</a>
+<a href="/blog/articles/cpu-busy-5-7a232df0.html">日常问题排查-同应用同流量，为什么CPU.busy差了 5 倍？</a>
+  </aside>
+</main>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, securityLevel: "loose" });
+</script>
+</body>
+</html>

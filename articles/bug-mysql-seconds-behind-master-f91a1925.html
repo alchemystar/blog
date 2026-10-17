@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="核心反常点：不同从库看起来长期相差约 500ms 延迟，但网络并没有对应差异，真正的问题是 Seconds_behind_master 的秒级精度无法刻画毫秒级主从延迟。">
+  <title>解Bug之路-MySQL-Seconds_behind_master精度问题引发的思考 - 苍天环绕的小世界</title>
+  <link rel="stylesheet" href="/blog/assets/site.css?v=20261007-contact-page">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="/blog/">苍天环绕的小世界</a>
+  <nav><a href="/blog/">首页</a><a class="nav-featured" href="/blog/featured.html">精品阅读</a><a href="/blog/#articles">文章</a><a href="/blog/contact.html">联系我</a></nav>
+</header>
+<main class="article-layout">
+  <aside class="article-aside">
+    <a class="back-link" href="/blog/">返回首页</a>
+    <div class="toc"><h2>目录</h2><a class="toc-level-1" href="#%E8%A7%A3bug%E4%B9%8B%E8%B7%AF-mysql-seconds-behind-master%E7%B2%BE%E5%BA%A6%E9%97%AE%E9%A2%98%E5%BC%95%E5%8F%91%E7%9A%84%E6%80%9D%E8%80%83">解Bug之路-MySQL-Seconds_behind_master精度问题引发的思考</a>
+<a class="toc-level-2" href="#%E5%89%8D%E8%A8%80">前言</a>
+<a class="toc-level-2" href="#%E9%97%AE%E9%A2%98%E7%8E%B0%E5%9C%BA">问题现场</a>
+<a class="toc-level-2" href="#%E7%BD%91%E7%BB%9C%E9%97%AE%E9%A2%98">网络问题？</a>
+<a class="toc-level-2" href="#seconds-behind-master%E7%9A%84%E5%8F%96%E7%82%B9%E6%95%B0%E6%8D%AE">Seconds_behind_master的取点数据</a>
+<a class="toc-level-2" href="#%E4%BB%80%E4%B9%88%E6%97%B6%E5%80%99%E8%AE%A1%E7%AE%97%E5%87%BA%E6%9D%A5%E4%B8%BA1-%E4%BB%80%E4%B9%88%E6%97%B6%E5%80%99%E8%AE%A1%E7%AE%97%E5%87%BA%E6%9D%A5%E4%B8%BA0">什么时候计算出来为1，什么时候计算出来为0</a>
+<a class="toc-level-3" href="#seconds-behind-master%E7%9A%84%E8%AE%A1%E7%AE%97%E6%BA%90%E7%A0%81">Seconds_behind_master的计算源码</a>
+<a class="toc-level-3" href="#clock-diff-with-master%E7%9A%84%E8%AE%A1%E7%AE%97%E6%97%B6%E6%9C%BA">clock_diff_with_master的计算时机</a>
+<a class="toc-level-3" href="#clock-diff-with-master%E7%9A%84%E8%B7%A8%E7%A7%92%E9%97%AE%E9%A2%98">clock_diff_with_master的跨秒问题</a>
+<a class="toc-level-3" href="#%E5%AE%9E%E9%99%85%E4%B8%BB%E4%BB%8E%E5%BB%B6%E8%BF%9F%E4%B8%BA0-clock-diff-with-master%E8%AE%A1%E7%AE%97%E5%87%BA%E6%9D%A5%E4%B8%BA-1-seconds-behind-master%E8%AE%A1%E7%AE%97%E4%B8%BA1">实际主从延迟为0，clock_diff_with_master计算出来为-1，Seconds_behind_master计算为1</a>
+<a class="toc-level-3" href="#%E5%AE%9E%E9%99%85%E4%B8%BB%E4%BB%8E%E5%BB%B6%E8%BF%9F%E4%B8%BA0-clock-diff-with-master%E8%AE%A1%E7%AE%97%E4%B8%BA0-seconds-behind-master%E8%AE%A1%E7%AE%97%E4%B8%BA-1%E5%B9%B6%E8%A2%AB%E6%A0%A1%E6%AD%A3%E4%B8%BA0">实际主从延迟为0，clock_diff_with_master计算为0，Seconds_behind_master计算为-1并被校正为0</a>
+<a class="toc-level-2" href="#%E5%A6%82%E4%BD%95%E8%8E%B7%E5%BE%97%E6%AF%AB%E7%A7%92%E7%BA%A7%E7%9A%84%E4%B8%BB%E4%BB%8E%E5%BB%B6%E8%BF%9F">如何获得毫秒级的主从延迟</a>
+<a class="toc-level-1" href="#%E6%80%BB%E7%BB%93">总结</a>
+<a class="toc-level-2" href="#%E5%85%AC%E4%BC%97%E5%8F%B7">公众号</a></div>
+  </aside>
+  <article class="article">
+    <header class="article-title">
+      <div class="meta"><span>解Bug之路</span><time>2022.05.05</time><span>4 min read</span></div>
+      <h1>解Bug之路-MySQL-Seconds_behind_master精度问题引发的思考</h1>
+      <p>核心反常点：不同从库看起来长期相差约 500ms 延迟，但网络并没有对应差异，真正的问题是 Seconds_behind_master 的秒级精度无法刻画毫秒级主从延迟。</p>
+    </header>
+    <div class="prose"><h1 id="%E8%A7%A3bug%E4%B9%8B%E8%B7%AF-mysql-seconds-behind-master%E7%B2%BE%E5%BA%A6%E9%97%AE%E9%A2%98%E5%BC%95%E5%8F%91%E7%9A%84%E6%80%9D%E8%80%83">解Bug之路-MySQL-Seconds_behind_master精度问题引发的思考</h1>
+<h2 id="%E5%89%8D%E8%A8%80">前言</h2>
+<p>监控指标是我们日常分析排查问题的利器。但指标所能表示的精度也是有限的，用这些指标去衡量超出其表示范围的数据往往就会造成一些&quot;误判&quot;。而用Seconds_behind_master去评估1s内的主从延迟就是一个经典的例子。</p>
+<h2 id="%E9%97%AE%E9%A2%98%E7%8E%B0%E5%9C%BA">问题现场</h2>
+<p>笔者最近发现了一个很奇怪的现象。不同的从库表现出来的主从延迟(Seconds_behind_master)差距有将近500ms之巨！如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/seconds_behind_master/Seconds_behind_master_500.png" alt="bug_locale" loading="lazy"></p>
+<p>有点诡异，在相同配置机器的情况下，20公里能造成将近500ms的主从延迟差距么？</p>
+<h2 id="%E7%BD%91%E7%BB%9C%E9%97%AE%E9%A2%98">网络问题？</h2>
+<p>最先想到的那必须是网络问题，ping了一下。发现最多也就相差1ms，这个和500ms的差距过大，看来还有其它因素的影响。</p>
+<h2 id="seconds-behind-master%E7%9A%84%E5%8F%96%E7%82%B9%E6%95%B0%E6%8D%AE">Seconds_behind_master的取点数据</h2>
+<p>翻了下MySQL的指标，发现Seconds_behind_master是以秒(s)为单位的。那么我们的监控中是如何算出来毫秒的呢？带着这样的问题，我挖掘了一下监控指标取点的真实数据。如下所示：</p>
+<p class="image-only"><img src="/blog/assets/source/image/seconds_behind_master/slave_in_1_0.png" alt="bug_locale" loading="lazy"></p>
+<p>看来主从延迟真的很大？C Slave从监控取点来看确实有主从延迟。</p>
+<h2 id="%E4%BB%80%E4%B9%88%E6%97%B6%E5%80%99%E8%AE%A1%E7%AE%97%E5%87%BA%E6%9D%A5%E4%B8%BA1-%E4%BB%80%E4%B9%88%E6%97%B6%E5%80%99%E8%AE%A1%E7%AE%97%E5%87%BA%E6%9D%A5%E4%B8%BA0">什么时候计算出来为1，什么时候计算出来为0</h2>
+<p>这时笔者突然想到一个问题，Seconds_behind_master什么时候计算出来为1、什么时候计算出来为0的呢？会不会按照四舍五入法，&lt;500ms的就是0，&gt;=500ms的就是1呢？这样是不是就能解释两个从库的指标取点不同呢，一个卡在499ms、一个卡在501ms？为了了解这一问题，笔者探究起了源码。</p>
+<h3 id="seconds-behind-master%E7%9A%84%E8%AE%A1%E7%AE%97%E6%BA%90%E7%A0%81">Seconds_behind_master的计算源码</h3>
+<p>事实上，这个指标的计算在MySQL源码中有很多其它微妙的分支。在此笔者只列出当前笔者遇到问题下相关的源码。</p>
+<pre><code class="language-">long time_diff= ((long)(time(0) - mi-&gt;rli-&gt;last_master_timestamp)
+                       - mi-&gt;clock_diff_with_master);</code></pre>
+<p>关键点在于这个clock_diff_with_master。这边需要先引入一个容易被忽略的常识，那就是不同机器的时间戳是不一致的！所以我们在计算Seconds_behind_master的时候需要去掉时间戳不一致的影响，而这个就是clock_diff_with_master！</p>
+<h3 id="clock-diff-with-master%E7%9A%84%E8%AE%A1%E7%AE%97%E6%97%B6%E6%9C%BA">clock_diff_with_master的计算时机</h3>
+<p>首先我们看一下计算clock_diff_with_master的时机</p>
+<pre><code class="language-">handle_slave_io
+	/* 建立主从连接 */
+	|-&gt;safe_connect(thd, mysql, mi)) 
+	/* connected: 连接成功后，计算一下主从clock\=_diff_with_master */
+	|-&gt;get_master_version_and_clock</code></pre>
+<p>上面代码栈表明是在主从连上或者重连(reconnect)的那一刻去计算一次clock_diff_with_master，以后直到下一次重连之前就一直用这个值了。</p>
+<p class="image-only"><img src="/blog/assets/source/image/seconds_behind_master/time_clock_diff_time.png" alt="bug_locale" loading="lazy"></p>
+<h3 id="clock-diff-with-master%E7%9A%84%E8%B7%A8%E7%A7%92%E9%97%AE%E9%A2%98">clock_diff_with_master的跨秒问题</h3>
+<p>在这里，笔者察觉到这个clock_diff_with_master的计算，精度是只能到秒的。那么自然就会有下面的几种现象，为了简单起见我们假设绝对时钟是从0开始。</p>
+<h3 id="%E5%AE%9E%E9%99%85%E4%B8%BB%E4%BB%8E%E5%BB%B6%E8%BF%9F%E4%B8%BA0-clock-diff-with-master%E8%AE%A1%E7%AE%97%E5%87%BA%E6%9D%A5%E4%B8%BA-1-seconds-behind-master%E8%AE%A1%E7%AE%97%E4%B8%BA1">实际主从延迟为0，clock_diff_with_master计算出来为-1，Seconds_behind_master计算为1</h3>
+<p>因为精度只能精确到秒。那么假设在计算clock_diff_with_master的那一瞬间。从库的clock是0.5s，主库的clock是1.0s，那么他们的时间差就会由于精度的原因从0.5s放大到1s。</p>
+<p class="image-only"><img src="/blog/assets/source/image/seconds_behind_master/seconds_behind_master_1.png" alt="bug_locale" loading="lazy"></p>
+<p>此时的clock_diff_time计算为-1.假设我们在500ms之后计算Seconds_behind_master。那么如上图所示，虽然实际主从延迟为0，但是Seconds_behind_master计算出来为1。</p>
+<h5 id="%E6%AD%A4%E7%A7%8D%E6%83%85%E5%86%B5%E7%9A%84%E7%9B%91%E6%8E%A7%E5%8F%96%E5%87%BA%E7%9A%84seconds-behind-master%E5%B9%B3%E5%9D%87%E5%80%BC">此种情况的监控取出的Seconds_behind_master平均值</h5>
+<p>以上面的case为例，我们看一下对指标Seconds_behind_master平均值的影响。假设我们的监控取点是随机的，也就是可能落到1s内的任意一个点上，我们进行一下平均值的计算。</p>
+<p class="image-only"><img src="/blog/assets/source/image/seconds_behind_master/seconds_behind_master_scape.png" alt="bug_locale" loading="lazy"></p>
+<p>在上面的案例中，在从库[0.5,1.5)的这一秒内。在[0.5,1)区间计算出来Seconds_behind_master为0，在[1,1.5)区间计算出来Seconds_behind_master为1，那么平均值就为(0.5 4_5 0.5*1)/(0.5+0.5)=0.5=500ms!!!!!!</p>
+<h3 id="%E5%AE%9E%E9%99%85%E4%B8%BB%E4%BB%8E%E5%BB%B6%E8%BF%9F%E4%B8%BA0-clock-diff-with-master%E8%AE%A1%E7%AE%97%E4%B8%BA0-seconds-behind-master%E8%AE%A1%E7%AE%97%E4%B8%BA-1%E5%B9%B6%E8%A2%AB%E6%A0%A1%E6%AD%A3%E4%B8%BA0">实际主从延迟为0，clock_diff_with_master计算为0，Seconds_behind_master计算为-1并被校正为0</h3>
+<p>在这里我们依旧以主从之间的时间差有0.5s计算，但是这里面我们稍稍偏移一下，使得计算的clock_diff_with_master时候不跨秒，如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/seconds_behind_master/seconds_behind_master_-1.png" alt="bug_locale" loading="lazy"></p>
+<p>按照上面的计算，Seconds_behind_master由于精度问题会出现-1这样一个非常令人迷惑的结果，它会让人觉得从库竟然比主库还快！所以MySQL源码中针对这一问题作出了详细的解释。并在计算为-1之后，强行校正为0！源码如下所示:</p>
+<pre><code class="language-">      long time_diff= ((long)(time(0) - mi-&gt;rli-&gt;last_master_timestamp)
+                       - mi-&gt;clock_diff_with_master);
+      /*
+        Apparently on some systems time_diff can be &lt;0. Here are possible
+        reasons related to MySQL:
+        - the master is itself a slave of another master whose time is ahead.
+        - somebody used an explicit SET TIMESTAMP on the master.
+        Possible reason related to granularity-to-second of time functions
+        (nothing to do with MySQL), which can explain a value of -1:
+        assume the master&#x27;s and slave&#x27;s time are perfectly synchronized, and
+        that at slave&#x27;s connection time, when the master&#x27;s timestamp is read,
+        it is at the very end of second 1, and (a very short time later) when
+        the slave&#x27;s timestamp is read it is at the very beginning of second
+        2. Then the recorded value for master is 1 and the recorded value for
+        slave is 2. At SHOW SLAVE STATUS time, assume that the difference
+        between timestamp of slave and rli-&gt;last_master_timestamp is 0
+        (i.e. they are in the same second), then we get 0-(2-1)=-1 as a result.
+        This confuses users, so we don&#x27;t go below 0: hence the max().
+
+        last_master_timestamp == 0 (an &quot;impossible&quot; timestamp 1970) is a
+        special marker to say &quot;consider we have caught up&quot;.
+      */
+      protocol-&gt;store((longlong)(mi-&gt;rli-&gt;last_master_timestamp ?
+                                   max(0L, time_diff) : 0));</code></pre>
+<h2 id="%E5%A6%82%E4%BD%95%E8%8E%B7%E5%BE%97%E6%AF%AB%E7%A7%92%E7%BA%A7%E7%9A%84%E4%B8%BB%E4%BB%8E%E5%BB%B6%E8%BF%9F">如何获得毫秒级的主从延迟</h2>
+<p>由于Seconds_behind_master精度的原因无法准确的反映毫秒级的主从延迟情况（甚至会有非常大的误差），所以出现了pt-heartbeat这样的工具去精确的计算主从间毫秒级的延迟。在后续DBA采用pt-heartbeat进行监控后，也验证了笔者的想法。看上去主从延迟(Seconds_behind_master)相差非常大的两个从库之间的精确主从延迟的差距实际&lt;1ms。</p>
+<h1 id="%E6%80%BB%E7%BB%93">总结</h1>
+<p>虽然监控指标是我们分析问题的利器，但它的计算方法以及精度也是有着相应的适用范围。在日常分析问题过程中如果遇到了有悖直觉的监控指标时候，可以尝试去弄清楚指标的计算方法，这样才不至于思维走向弯路。</p>
+<h2 id="%E5%85%AC%E4%BC%97%E5%8F%B7">公众号</h2>
+<p>关注笔者公众号，获取更多干货文章:</p>
+<p class="image-only"><img src="/blog/assets/source/image/remote/img2020.cnblogs.com/1411116-20200925101442007-492748732-09a30055aa06.png" alt="" loading="lazy"></p></div>
+    <nav class="prev-next"><a href="/blog/articles/bug-druid-bug-da01435d.html"><small>上一篇</small><span>解Bug之路-Druid的Bug</span></a><a href="/blog/articles/bug-nat-e95e7827.html"><small>下一篇</small><span>解Bug之路-NAT引发的性能瓶颈</span></a></nav>
+  </article>
+  <aside class="article-related">
+    <h2>同类文章</h2><a href="/blog/articles/bug-nat-e95e7827.html">解Bug之路-NAT引发的性能瓶颈</a>
+<a href="/blog/articles/bug-key-c35d61ac.html">解Bug之路-隔离故障点后业务不恢复?-热点Key处理与亚稳态故障</a>
+<a href="/blog/articles/bug-with-ai-909a31ae.html">解Bug之路-with AI-应用被限流？</a>
+<a href="/blog/articles/bug-999-3fc4d0f3.html">解Bug之路-应用999线升高</a>
+<a href="/blog/articles/bug-zookeeper-1b26955c.html">解Bug之路-ZooKeeper集群拒绝服务</a>
+<a href="/blog/articles/bug-9ac0cd85.html">解Bug之路-主从切换&quot;未成功&quot;?</a>
+<a href="/blog/articles/bug-tcp-bug-d2a0b4b0.html">解Bug之路-TCP使用不当引起的Bug</a>
+<a href="/blog/articles/bug-6995f45c.html">解Bug之路-记一次线上请求偶尔变慢的排查</a>
+<a href="/blog/articles/bug-nginx-502-bad-gateway-a95af6ef.html">解Bug之路-Nginx 502 Bad Gateway</a>
+<a href="/blog/articles/bug-sql-64530c9f.html">解Bug之路-中间件&quot;SQL重复执行&quot;</a>
+<a href="/blog/articles/bug-c0b96e67.html">解Bug之路-记一次调用外网服务概率性失败问题的排查</a>
+<a href="/blog/articles/bug-9db7e3e3.html">解Bug之路-记一次存储故障的排查过程</a>
+<a href="/blog/articles/bug-dubbo-zookeeper-29ed9784.html">解Bug之路-dubbo应用无法重连zookeeper</a>
+<a href="/blog/articles/bug-dubbo-cac59f88.html">解Bug之路-dubbo流量上线时的非平滑问题</a>
+<a href="/blog/articles/bug-sql-f1e2ba02.html">解Bug之路-记一次中间件导致的慢SQL排查过程</a>
+<a href="/blog/articles/bug-kernel-tcp-caa0286b.html">解Bug之路-记一次对端kernel宕机后的tcp行为</a>
+<a href="/blog/articles/bug-jvm-bug-7
+  &lt;/aside&gt;
+&lt;/main&gt;
+
+&lt;script type=" module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, securityLevel: "loose" });
+</script>
+</body>
+</html>

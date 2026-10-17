@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="产线一些应用其JVM只占了8G中的2个G的空间。Page cache也只占了1个G,但是free -g出来内存确已经耗尽: 这个看上去很吓人。遇到这种情况，我们先cat /proc/meminfo看下具体的内存占用情况 我们可以看到有将近3.6G被耗尽在Slab这一项里面，紧接着下面一项SRecla...">
+  <title>产线内存&quot;耗尽&quot; - 苍天环绕的小世界</title>
+  <link rel="stylesheet" href="/blog/assets/site.css?v=20261007-contact-page">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="/blog/">苍天环绕的小世界</a>
+  <nav><a href="/blog/">首页</a><a class="nav-featured" href="/blog/featured.html">精品阅读</a><a href="/blog/#articles">文章</a><a href="/blog/contact.html">联系我</a></nav>
+</header>
+<main class="article-layout">
+  <aside class="article-aside">
+    <a class="back-link" href="/blog/">返回首页</a>
+    <div class="toc"><h2>目录</h2><a class="toc-level-1" href="#%E4%BA%A7%E7%BA%BF%E5%86%85%E5%AD%98-%E8%80%97%E5%B0%BD">产线内存&quot;耗尽&quot;</a>
+<a class="toc-level-1" href="#%E4%BB%80%E4%B9%88%E5%AF%BC%E8%87%B4%E4%BA%86slab%E8%BF%87%E9%AB%98">什么导致了slab过高</a>
+<a class="toc-level-1" href="#%E6%89%8B%E5%8A%A8%E6%B8%85%E7%90%86">手动清理</a></div>
+  </aside>
+  <article class="article">
+    <header class="article-title">
+      <div class="meta"><span>其它</span><time>2021.03.25</time><span>1 min read</span></div>
+      <h1>产线内存&quot;耗尽&quot;</h1>
+      <p>产线一些应用其JVM只占了8G中的2个G的空间。Page cache也只占了1个G,但是free -g出来内存确已经耗尽: 这个看上去很吓人。遇到这种情况，我们先cat /proc/meminfo看下具体的内存占用情况 我们可以看到有将近3.6G被耗尽在Slab这一项里面，紧接着下面一项SRecla...</p>
+    </header>
+    <div class="prose"><h1 id="%E4%BA%A7%E7%BA%BF%E5%86%85%E5%AD%98-%E8%80%97%E5%B0%BD">产线内存&quot;耗尽&quot;</h1>
+<p>产线一些应用其JVM只占了8G中的2个G的空间。Page cache也只占了1个G,但是free -g出来内存确已经耗尽:</p>
+<pre><code class="language-">free -g
+	    total   used   free shared buffers cached
+Mem:      7    7       0       0     0     1</code></pre>
+<p>这个看上去很吓人。遇到这种情况，我们先cat /proc/meminfo看下具体的内存占用情况</p>
+<pre><code class="language-">cat /proc/meminfo
+MemTotal: 8123456KB (8G)
+......
+Slab:   3671234KB (3.6G)
+SReclaimable: 351234 (3.5G)</code></pre>
+<p>我们可以看到有将近3.6G被耗尽在Slab这一项里面，紧接着下面一项SReclaimable，表示这3.6个G中可回收的为3.5G。而这部分都统计在used里面，所以看上去吓人。</p>
+<h1 id="%E4%BB%80%E4%B9%88%E5%AF%BC%E8%87%B4%E4%BA%86slab%E8%BF%87%E9%AB%98">什么导致了slab过高</h1>
+<p>我们可以slabtop一下</p>
+<pre><code class="language-">slabtop
+3123456K(3.1G) dentry</code></pre>
+<p>发现是目录项导致。这可能是内核访问了一个拥有特别多文件的文件夹导致。不过由于可回收，所以我们不用太担心。</p>
+<h1 id="%E6%89%8B%E5%8A%A8%E6%B8%85%E7%90%86">手动清理</h1>
+<p>我们可以通过</p>
+<pre><code class="language-">echo 2 &gt; /proc/sys/vm/drop_caches</code></pre>
+<p>手动清理可回收的slab内存。不过，清理当时，会对上面跑的应用有一定的影响。最好先下流量再做操作。</p></div>
+    <nav class="prev-next"><a href="/blog/articles/tcp-syncookie-0db101f6.html"><small>上一篇</small><span>tcp_syncookie的坑</span></a><a href="/blog/articles/linux-socket-tcp-accept-e8523e42.html"><small>下一篇</small><span>从Linux源码看Socket(TCP)的accept</span></a></nav>
+  </article>
+  <aside class="article-related">
+    <h2>同类文章</h2><a href="/blog/articles/ntp-8613284a.html">ntp导致的时钟回拨</a>
+<a href="/blog/articles/post-0b648183.html">我的编程之旅</a>
+  </aside>
+</main>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, securityLevel: "loose" });
+</script>
+</body>
+</html>

@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="核心反常点：请求只是偶发超时且一会儿又恢复，应用层很难定位，真正异常是磁盘坏道/IO 卡顿在业务请求路径上被间歇性放大。">
+  <title>日常问题排查-请求偶尔超时-磁盘故障 - 苍天环绕的小世界</title>
+  <link rel="stylesheet" href="/blog/assets/site.css?v=20261007-contact-page">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="/blog/">苍天环绕的小世界</a>
+  <nav><a href="/blog/">首页</a><a class="nav-featured" href="/blog/featured.html">精品阅读</a><a href="/blog/#articles">文章</a><a href="/blog/contact.html">联系我</a></nav>
+</header>
+<main class="article-layout">
+  <aside class="article-aside">
+    <a class="back-link" href="/blog/">返回首页</a>
+    <div class="toc"><h2>目录</h2><a class="toc-level-1" href="#%E6%97%A5%E5%B8%B8%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5-%E8%AF%B7%E6%B1%82%E5%81%B6%E5%B0%94%E8%B6%85%E6%97%B6-%E7%A3%81%E7%9B%98%E6%95%85%E9%9A%9C">日常问题排查-请求偶尔超时-磁盘故障</a>
+<a class="toc-level-2" href="#%E7%A3%81%E7%9B%98%E5%9D%8F%E9%81%93">磁盘坏道</a>
+<a class="toc-level-2" href="#%E6%95%85%E9%9A%9C%E7%8E%B0%E8%B1%A1">故障现象</a>
+<a class="toc-level-2" href="#%E7%9B%91%E6%8E%A7">监控</a>
+<a class="toc-level-2" href="#%E7%A3%81%E7%9B%98%E7%9B%91%E6%8E%A7">磁盘监控</a>
+<a class="toc-level-2" href="#%E5%90%8E%E7%BB%AD%E6%96%B9%E6%A1%88">后续方案</a>
+<a class="toc-level-2" href="#%E6%80%BB%E7%BB%93">总结</a></div>
+  </aside>
+  <article class="article">
+    <header class="article-title">
+      <div class="meta"><span>日常问题排查</span><time>2021.05.19</time><span>1 min read</span></div>
+      <h1>日常问题排查-请求偶尔超时-磁盘故障</h1>
+      <p>核心反常点：请求只是偶发超时且一会儿又恢复，应用层很难定位，真正异常是磁盘坏道/IO 卡顿在业务请求路径上被间歇性放大。</p>
+    </header>
+    <div class="prose"><h1 id="%E6%97%A5%E5%B8%B8%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5-%E8%AF%B7%E6%B1%82%E5%81%B6%E5%B0%94%E8%B6%85%E6%97%B6-%E7%A3%81%E7%9B%98%E6%95%85%E9%9A%9C">日常问题排查-请求偶尔超时-磁盘故障</h1>
+<h2 id="%E7%A3%81%E7%9B%98%E5%9D%8F%E9%81%93">磁盘坏道</h2>
+<p>磁盘故障是个非常常见的现象。而磁盘坏道便是其中最常见的问题。而当我们的应用做磁盘操作的时候 正巧落在坏道上面，就会导致卡住的现象。如果坏道比较小的话，会在一段时间内恢复响应。但是，如果下次操作又落到坏道上面，依旧会卡主-_-!</p>
+<h2 id="%E6%95%85%E9%9A%9C%E7%8E%B0%E8%B1%A1">故障现象</h2>
+<p>开发陆续收到服务器负载过高以及业务报错告警。表现为偶尔的调用超时。经排查业务告警和负载过高均出现在同一台机器上。这时候呢，我们就可以立马翻看监控了。</p>
+<h2 id="%E7%9B%91%E6%8E%A7">监控</h2>
+<p class="image-only"><img src="/blog/assets/source/image/daily_bug/disk/monitor.png" alt="codegen" loading="lazy"></p>
+<p>(注：这边只是示意图，产线截图因为安全原因不可能放出来的) 从中可以发现，超时的调用时间分布和CPU Busy IoWait的时间分布一致。既然是IO Wait，我们很自然的想到可能是磁盘有问题。</p>
+<h2 id="%E7%A3%81%E7%9B%98%E7%9B%91%E6%8E%A7">磁盘监控</h2>
+<p class="image-only"><img src="/blog/assets/source/image/daily_bug/disk/disk_rw_time.png" alt="codegen" loading="lazy"></p>
+<p>图中可以看到，disk和cpu iowait时间一致。同时观测到，我们当时的iops仅有30左右。很明显的，可以推导出当时磁盘有问题。SA反馈给厂商后，反馈磁盘有坏道。</p>
+<h2 id="%E5%90%8E%E7%BB%AD%E6%96%B9%E6%A1%88">后续方案</h2>
+<p>首先，由于磁盘问题不能立马解决（需要等厂商换盘），所以先下线这几台机器的流量，等待下一次的维护后再上线。在应用层，我们可以通过配置异步日志的方式来减少损失。但异步日志满了之后，依旧会出现卡顿的现象，那么我们可以配置成异步日志可丢的模式，这就需要在日志的准确性和系统的高可用之间做取舍了。</p>
+<h2 id="%E6%80%BB%E7%BB%93">总结</h2>
+<p>磁盘出问题是一个非常常见的现象，在遇到问题后，和监控曲线相对应就能很快找到原因。</p></div>
+    <nav class="prev-next"><a href="/blog/articles/redis-d4ca6a5a.html"><small>上一篇</small><span>日常问题排查-系统失去响应-Redis使用不当</span></a><a href="/blog/articles/post-aba46ada.html"><small>下一篇</small><span>日常问题排查-读从库没有原子性？</span></a></nav>
+  </article>
+  <aside class="article-related">
+    <h2>同类文章</h2><a href="/blog/articles/younggc-84c79a21.html">日常问题排查-Younggc突然变长</a>
+<a href="/blog/articles/post-ce618c61.html">日常问题排查-空闲一段时间再请求就超时</a>
+<a href="/blog/articles/dns-5b7836f2.html">日常问题排查-奇怪的DNS</a>
+<a href="/blog/articles/post-a12062b0.html">日常问题排查-偶发性读数据不一致</a>
+<a href="/blog/articles/mvcc-for-update-6ea5409f.html">日常问题排查-MVCC和for update混用导致读数据不一致</a>
+<a href="/blog/articles/post-0abe94ca.html">日常问题排查-改表时读数据不一致</a>
+<a href="/blog/articles/post-df9748ee.html">日常问题排查-连接突然全部关闭</a>
+<a href="/blog/articles/post-625093a1.html">日常问题排查-集群逐步失去响应</a>
+<a href="/blog/articles/mq-a6fe4c2d.html">日常问题排查-mq不消费</a>
+<a href="/blog/articles/post-aba46ada.html">日常问题排查-读从库没有原子性？</a>
+<a href="/blog/articles/redis-d4ca6a5a.html">日常问题排查-系统失去响应-Redis使用不当</a>
+<a href="/blog/articles/post-ff1bd808.html">日常问题排查-调用超时</a>
+<a href="/blog/articles/cpu-busy-5-7a232df0.html">日常问题排查-同应用同流量，为什么CPU.busy差了 5 倍？</a>
+  </aside>
+</main>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, securityLevel: "loose" });
+</script>
+</body>
+</html>

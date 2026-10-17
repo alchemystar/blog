@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="核心反常点：应用每次发布后只有第一笔请求超时，后续全部正常，表面影响很小，实际暴露的是连接刚建立但还不可用、listen backlog 与 TCP 握手队列之间的时序问题。">
+  <title>解Bug之路-dubbo流量上线时的非平滑问题 - 苍天环绕的小世界</title>
+  <link rel="stylesheet" href="/blog/assets/site.css?v=20261007-contact-page">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="/blog/">苍天环绕的小世界</a>
+  <nav><a href="/blog/">首页</a><a class="nav-featured" href="/blog/featured.html">精品阅读</a><a href="/blog/#articles">文章</a><a href="/blog/contact.html">联系我</a></nav>
+</header>
+<main class="article-layout">
+  <aside class="article-aside">
+    <a class="back-link" href="/blog/">返回首页</a>
+    <div class="toc"><h2>目录</h2><a class="toc-level-1" href="#%E8%A7%A3bug%E4%B9%8B%E8%B7%AF-dubbo%E6%B5%81%E9%87%8F%E4%B8%8A%E7%BA%BF%E6%97%B6%E7%9A%84%E9%9D%9E%E5%B9%B3%E6%BB%91%E9%97%AE%E9%A2%98">解Bug之路-dubbo流量上线时的非平滑问题</a>
+<a class="toc-level-2" href="#%E5%89%8D%E8%A8%80">前言</a>
+<a class="toc-level-2" href="#%E9%97%AE%E9%A2%98%E7%8E%B0%E5%9C%BA">问题现场</a>
+<a class="toc-level-2" href="#%E6%8E%92%E6%9F%A5%E6%97%A5%E5%BF%97">排查日志</a>
+<a class="toc-level-2" href="#%E6%80%9D%E8%B7%AF1-server%E7%AB%AF%E5%A4%84%E7%90%86%E8%B6%85%E6%97%B6">思路1:Server端处理超时</a>
+<a class="toc-level-2" href="#%E6%80%9D%E8%B7%AF2-client%E7%AB%AF%E6%B2%A1%E6%9C%89%E5%8F%91%E9%80%81%E6%88%90%E5%8A%9F">思路2:Client端没有发送成功</a>
+<a class="toc-level-2" href="#%E8%BF%9E%E6%8E%A5%E6%97%A5%E5%BF%97">连接日志</a>
+<a class="toc-level-2" href="#%E4%B8%BA%E4%BB%80%E4%B9%88%E8%BF%9E%E6%8E%A5%E5%BB%BA%E7%AB%8B%E6%88%90%E5%8A%9F%E7%A1%AE%E6%97%A0%E6%B3%95%E4%BD%BF%E7%94%A8">为什么连接建立成功确无法使用</a>
+<a class="toc-level-2" href="#tcp-backlog%E6%BA%A2%E5%87%BA%E5%88%86%E6%9E%90">tcp_backlog溢出分析</a>
+<a class="toc-level-3" href="#tcp%E7%9A%84%E4%B8%89%E6%AC%A1%E6%8F%A1%E6%89%8B">tcp的三次握手</a>
+<a class="toc-level-2" href="#tcp-check-req">tcp_check_req</a>
+<a class="toc-level-2" href="#%E4%BB%80%E4%B9%88%E6%97%B6%E5%80%99listen-overflow">什么时候listen_overflow</a>
+<a class="toc-level-2" href="#%E4%BF%AE%E5%A4%8D%E6%96%B9%E6%A1%88">修复方案</a>
+<a class="toc-level-3" href="#%E8%AE%BE%E7%BD%AEkernel%E5%8F%82%E6%95%B0">设置kernel参数</a>
+<a class="toc-level-3" href="#dubbo%E4%BB%A3%E7%A0%81%E5%A2%9E%E5%8A%A0backlog%E7%9A%84%E8%AE%BE%E7%BD%AE">dubbo代码增加backlog的设置</a>
+<a class="toc-level-2" href="#%E6%80%BB%E7%BB%93">总结</a>
+<a class="toc-level-2" href="#%E5%8E%9F%E6%96%87%E9%93%BE%E6%8E%A5">原文链接</a></div>
+  </aside>
+  <article class="article">
+    <header class="article-title">
+      <div class="meta"><span>解Bug之路</span><time>2019.10.17</time><span>9 min read</span></div>
+      <h1>解Bug之路-dubbo流量上线时的非平滑问题</h1>
+      <p>核心反常点：应用每次发布后只有第一笔请求超时，后续全部正常，表面影响很小，实际暴露的是连接刚建立但还不可用、listen backlog 与 TCP 握手队列之间的时序问题。</p>
+    </header>
+    <div class="prose"><h1 id="%E8%A7%A3bug%E4%B9%8B%E8%B7%AF-dubbo%E6%B5%81%E9%87%8F%E4%B8%8A%E7%BA%BF%E6%97%B6%E7%9A%84%E9%9D%9E%E5%B9%B3%E6%BB%91%E9%97%AE%E9%A2%98">解Bug之路-dubbo流量上线时的非平滑问题</h1>
+<h2 id="%E5%89%8D%E8%A8%80">前言</h2>
+<p>笔者最近解决了一个困扰了业务系统很久的问题。这个问题只在发布的出现，每次只影响一两次调用，相较于其它的问题来说，这个问题有点不够受重视。由于种种原因，使得这个问题到了业务必须解决的程度，于是就到了笔者的手上。</p>
+<h2 id="%E9%97%AE%E9%A2%98%E7%8E%B0%E5%9C%BA">问题现场</h2>
+<p>我们采用的是dubbo服务，这是个稳定成熟的RPC框架。但是我们在某些应用中会发现，只要这个应用一发布(或者重启),就会出现请求超时的问题，如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/dubbo-online-bug/dubbo-timeout.png" alt="repeatable_read" loading="lazy"></p>
+<p>而且都是第一笔请求会报错，之后就再也没有问题了。</p>
+<h2 id="%E6%8E%92%E6%9F%A5%E6%97%A5%E5%BF%97">排查日志</h2>
+<p>好了，现象我们知道了，于是开始排查那个时间点的日志。Server端没有任何日志，而Client(App1)端报错超时。报错如下所示:</p>
+<pre><code class="language-">2019-08-22 20:33:50.798
+com.alibaba.dubbo.rpc.RpcException:
+	Failed to invoke the method set in the servce XXXFacade,
+	tries 1 times
+	......
+	start time: 2019-08-22 20:32:50.474
+	end time: 2019-08-22 30:33:50.767 
+	timeout=60000,channel:/21.64.21.164:44502-&gt;21.64.35.75:20880</code></pre>
+<p>看日志报错是这个tcp五元组(21.64.21.164:44502-&gt;21.64.35.75:20880)有问题。于是笔者netstat了一下，查看当前此连接的状态:</p>
+<pre><code class="language-">netstat -anp | grep 44502
+21.64.21.164:44502 21.64.35.75:20880 ESTABLISHED - </code></pre>
+<p>这个连接处于正常的ESTABLISHED状态，而且调用21.64.35.75这个server的连接只有这一个,那后续这台机器调用21.64.35.75这个server肯定只用到了这个连接，查看日志发现除了这一笔，其它调用一切正常。</p>
+<h2 id="%E6%80%9D%E8%B7%AF1-server%E7%AB%AF%E5%A4%84%E7%90%86%E8%B6%85%E6%97%B6">思路1:Server端处理超时</h2>
+<p>按照上面的报错，肯定这个连接有问题，按照正常思路，是否是第一笔调用的时候各种初始化过程(以及jit)导致server处理请求过慢?如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/dubbo-online-bug/think-one.png" alt="repeatable_read" loading="lazy"></p>
+<p>但这个问题很快被第二笔请求(和第一笔请求间隔只有一秒)给否决了。也就是说第一笔请求花了60s还超时，而第二笔请求在第一笔请求发出后的一秒后发出就成功了(而且耗时是毫秒级的)。如果按照上述思路，第二笔请求也应该等各种初始化完成之后再处理，也应该卡相当长的一段时间才对。再加上server端没有任何日志，就感觉好像没有收到请求。</p>
+<h2 id="%E6%80%9D%E8%B7%AF2-client%E7%AB%AF%E6%B2%A1%E6%9C%89%E5%8F%91%E9%80%81%E6%88%90%E5%8A%9F">思路2:Client端没有发送成功</h2>
+<p>于是我们开始了思路2，Client端没有发送成功。由于Dubbo是基于Netty的，其请求传输的处理过程是个NIO的异步化过程(只不过通过使用future机制对业务来说是同步的)。首先我们看下dubbo的超时检测机制,如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/dubbo-online-bug/timeout-detect.png" alt="repeatable_read" loading="lazy"></p>
+<p>当然，还有future的超时机制,这边我就不列举出来了。从这个机制可以看出，就算Client端发送的时候(因为写是写到socket的writebuffer里面，一般不会满，所以不会报错)没有发送出去,也不会在发的那一刻报出错误，而是要等定时扫描。为了验证这个猜想，笔者就开始着手排查连接的日志。</p>
+<h2 id="%E8%BF%9E%E6%8E%A5%E6%97%A5%E5%BF%97">连接日志</h2>
+<p>因为规律是第一笔失败，那么笔者开始怀疑连接创建的有问题,但后面的请求成功又表明连接创建是没有问题的。那么，是否是连接还没有创建好就发送了第一笔请求呢？带着这样的疑问，笔者找到了如下的日志:</p>
+<pre><code class="language-">2019-08-22 20:32:51.876 （DubboClientReconnectTimer-thread-1) Successed connect to server /21.64.35.75:20880 ... channel is 
+NettyChannel /21.64.21.164:44502 =&gt; /21.64.35.75:20880
+</code></pre>
+<p>由日志所示,21.64.21.164:44502这个连接串是在2019-08-22 20:32:51.876连接成功的，而上面出错的日志起始时间为</p>
+<pre><code class="language-">请求发送时间:2019-08-22 20:32:50.474
+连接开始建立时间:2019-08-22 20:32:51.876
+连接成功建立时间:2019-08-22 20:32:51.876</code></pre>
+<p>请求在连接成功建立之前，感觉非常符合笔者上述的猜想。但细想又不对，上述日志表示的是在2019-08-22 20:32:51.876开始建立连接并在1ms内建立成功连接。而请求确是50s发出的，dubbo本身代码不可能在连接还没做出创建动作的时候就开始发送请求(因为44502是由kernel分配的，没到创建连接动作之前是不可能知道这个端口号的,但它却在日志里面打印出来了),如下图所示：</p>
+<p class="image-only"><img src="/blog/assets/source/image/dubbo-online-bug/request-before-connect.png" alt="repeatable_read" loading="lazy"></p>
+<p>思考了一段时间，笔者觉得这种情况很有可能是日志是不准确的，它仅仅打印当前连接包装类中的信息，之前那个出错的连接已经被新建的连接掩盖了(在日志中)。我们看下dubbo中对应的打印日志代码:</p>
+<pre><code class="language-">    private String getTimeoutMessage(boolean scan) {
+        long nowTimestamp = System.currentTimeMillis();
+        return (sent &gt; 0 ? &quot;Waiting server-side response timeout&quot; : &quot;Sending request timeout in client-side&quot;)
+                + (scan ? &quot; by scan timer&quot; : &quot;&quot;) + &quot;. start time: &quot;
+                + (new SimpleDateFormat(&quot;yyyy-MM-dd HH:mm:ss.SSS&quot;).format(new Date(start))) + &quot;, end time: &quot;
+                + (new SimpleDateFormat(&quot;yyyy-MM-dd HH:mm:ss.SSS&quot;).format(new Date())) + &quot;,&quot;
+                + (sent &gt; 0 ? &quot; client elapsed: &quot; + (sent - start)
+                + &quot; ms, server elapsed: &quot; + (nowTimestamp - sent)
+                : &quot; elapsed: &quot; + (nowTimestamp - start)) + &quot; ms, timeout: &quot;
+                + timeout + &quot; ms, request: &quot; + request + &quot;, channel: &quot; + channel.getLocalAddress()
+                + &quot; -&gt; &quot; + channel.getRemoteAddress();
+    }</code></pre>
+<p>这个21.64.21.164:44502是由channel.getLocalAddress()得出的,我们看下调用链:</p>
+<pre><code class="language-">channel.getLocalAddress()
+	|-&gt;nettyClient.channel.getLocalAddress()</code></pre>
+<p>笔者看了下代码，dubbo在reconnect(重新连接的时候)会把nettyClient.channel换掉，从而可能打印出来和发送请求时不同的client端口信息。再加上日志里面打印出来的线程号DubboClientReconnectTimer-thread-1就几乎可以确定，之前还有一个连接，只不过这个连接失败了，新建的连接为21.64.21.164:44502。再仔细的找了下日志，发现了下面这条日志:</p>
+<pre><code class="language-">------------------日志分割线----------------
+2019-08-22 20:32:51,876（DubboClientReconnectTimer-thread-1)  Close old Netty channel /21.64.21.164:44471 :&gt; 21.64.35.75:20880
+on create new netty channel /21.64.21.164:44502 =&gt; /21.64.35.75:20880
+------------------日志分割线----------------
+2019-08-22 20:32:51.876 （DubboClientReconnectTimer-thread-1) Successed connect to server /21.64.35.75:20880 ... channel is 
+NettyChannel /21.64.21.164:44502 =&gt; /21.64.35.75:20880</code></pre>
+<p>即是说dubbo在把21.64.21.164:44471关闭后，立马创建了21.64.35.75:20880 那么整体过程如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/dubbo-online-bug/dubbo-wrong-log.png" alt="repeatable_read" loading="lazy"></p>
+<p>我们看下21.64.21.164:44471是什么时候创建的,继续搜寻日志:</p>
+<pre><code class="language-">zgrep &#x27;21.64.21.164:44471&#x27; dubbo.log.1.zip
+2019-08-22 20:31:59.871 (ZkClient-EventThread-23) uccessed connect to server /21.64.35.75:20880 ... channel is 
+NettyChannel /21.64.21.164: 44471 =&gt; /21.64.35.75:20880
+------------------日志分割线----------------
+2019-08-22 20:32:51,876（DubboClientReconnectTimer-thread-1)  Close old Netty channel /21.64.21.164:44471 :&gt; 21.64.35.75:20880</code></pre>
+<p>发现其在</p>
+<pre><code class="language-">连接1创建时间:2019-08-22 20:31:59.871
+请求发送时间:2019-08-22 20:32:50.474
+连接1关闭时间:2019-08-22 20:32:51,876</code></pre>
+<p>而且笔者翻看了业务日志，发现连接1在其生命周期内有且只有一笔请求，这笔请求就是报错的请求，由此可以看出这个连接1从建立成功开始就无法使用。</p>
+<h2 id="%E4%B8%BA%E4%BB%80%E4%B9%88%E8%BF%9E%E6%8E%A5%E5%BB%BA%E7%AB%8B%E6%88%90%E5%8A%9F%E7%A1%AE%E6%97%A0%E6%B3%95%E4%BD%BF%E7%94%A8">为什么连接建立成功确无法使用</h2>
+<p>首先由于dubbo是基于netty的，这种成熟的广泛应用的框架在创建连接这种问题上不应该会有问题。 而笔者仔细翻看netty翻看netty源码也确实遵守了NIO的编写套路。那么问题可能出现在环境上,既然应用(client/server)本身日志找不到更多的有用信息，那么看看操作系统能否有什么可以追寻的蛛丝马迹。于是笔者首先用dmesg查看下kernel打印的日志，client端没发现什么有用的信息，但server端的dmesg引起了笔者的注意</p>
+<pre><code class="language-">possible SYN flooding on port 20880. Sending cookies.
+possible SYN flooding on port 20880. Sending cookies.
+possible SYN flooding on port 20880. Sending cookies.
+possible SYN flooding on port 20880. Sending cookies.
+possible SYN flooding on port 20880. Sending cookies.</code></pre>
+<p>其字面意思为kenerl本身可能在20880端口遭到了SYN泛洪攻击，发送cookies。 这种日志会在并发连接过多的情况下由kernel打印出来。笔者netstat了下频繁出问题的机器，发现其特点都是连接特别多(达到了好几千甚至上万)。而dubbo的上线机制是只要注册到zookeeper后，zookeeper给所有的机器推送，所有的机器立马连接，这样就会造成比较高的并发连接，如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/dubbo-online-bug/dubbo-many-connect.png" alt="repeatable_read" loading="lazy"></p>
+<p>既然怀疑到了高并发connect，那么笔者就立马用netstat看下kernel对于tcp的统计信息:</p>
+<pre><code class="language-">netstat -s
+...
+TcpExt:
+	...
+	1607 times the listen queue of a socket overflowed
+	...</code></pre>
+<p>果然有这种并发连接导致的统计信息,socket overflowed表示的是server端的tcp_backlog队列溢出了。到这里笔者有八成把握是这个tcp_backlog设置的过小的问题了。下面就是分析，tcp_backlog溢出为什么会导致上述连接虽然成功但是第一笔报错的现象，从而和日志相印证，来证明笔者的猜测。</p>
+<h2 id="tcp-backlog%E6%BA%A2%E5%87%BA%E5%88%86%E6%9E%90">tcp_backlog溢出分析</h2>
+<h3 id="tcp%E7%9A%84%E4%B8%89%E6%AC%A1%E6%8F%A1%E6%89%8B">tcp的三次握手</h3>
+<p>先从tcp的三次握手进行着手分析，从tcp_v4_do_rcv函数进行入手，因为这个函数是tcp协议获取packet的地方,当三次握手的SYN第一次进来的时候，应该会走这个函数:</p>
+<pre><code class="language-">// 先考察一下三次握手的第一个SYN
+int tcp_v4_do_rcv(struct sock *sk, struct sk_buff *skb){
+	if (sk-&gt;sk_state == TCP_LISTEN) {
+		......
+		// 由于现在连接处于第一个SYN,现在server端的socket处于LISTEN状态
+		struct sock *nsk = tcp_v4_hnd_req(sk, skb);
+		......
+	}
+}
+// 我们继续看下tcp_v4_hnd_req代码,三次握手第一个SYN kernel走的分支
+tcp_v4_do_rcv
+	/* 由于tcp_v4_hnd_req没有发现和此五元组对应的连接,所以do nothing */
+	|-&gt;tcp_v4_hnd_req
+	|-&gt;tcp_rcv_state_process
+			/** case TCP_LISTEN &amp;&amp; th-&gt;syn */
+			|-&gt;conn_request(tcp_v4_conn_request)</code></pre>
+<p>我们继续分析conn_request函数，由于里面很多逻辑，所以我们滤掉了很多细节:</p>
+<pre><code class="language-">int tcp_v4_conn_request(struct sock *sk, struct sk_buff *skb) {
+	// 如果csk的reqsk queue满了，则设置want_cookie标识
+	if (inet_csk_reqsk_queue_is_full(sk) &amp;&amp; !isn) {
+		if (sysctl_tcp_syncookies) {
+			want_cookie = 1;
+		}
+		......
+		if(want_cookie){
+			// 下面这行就是打印possible SYN flooding的地方
+			syn_flood_warning(skb);
+			......
+		}
+		// 发送synack,即三次握手的第二次握手
+		// 注意want_cookie的时候并不把对应的req加入到reqsk的hash列表中
+		if (__tcp_v4_send_synack(sk, req, dst) || want_cookie)
+			goto drop_and_free;
+		// 如果发送syack成功，则加到hash列表里面
+		inet_csk_reqsk_queue_hash_add(sk, req, TCP_TIMEOUT_INIT);
+		......
+		drop_and_free;
+			reqsk_free(req);
+		return 0;
+	}
+}</code></pre>
+<p>上面就是三次握手的前两次握手，如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/dubbo-online-bug/syn_synack.png" alt="repeatable_read" loading="lazy"></p>
+<p>现在让我们看下最关键的第三次握手(客户端发给server ack的过程),依旧从tcp_v4_do_rcv开始</p>
+<pre><code class="language-">tcp_v4_hnd_req
+	|-&gt;tcp_v4_hnd_req
+// 这里面分两种情况
+static struct sock *tcp_v4_hnd_req(struct sock *sk, struct sk_buff *skb){
+	// 首先从inet_csk_search_req看是否有对应的五元组
+	struct request_sock *req = inet_csk_search_req(sk, &amp;prev, th-&gt;source,
+						       iph-&gt;saddr, iph-&gt;daddr);
+	// 这边的req分支下的tcp_check_req是重点，我们下面再分析
+	if (req)
+		return tcp_check_req(sk, skb, req, prev);
+	// 如果没有找到对应的req，则可能是SYN Cookie路径
+	sk = cookie_v4_check(sk, skb, &amp;(IPCB(skb)-&gt;opt));
+	// 校验成功后会根据Cookie重建child sock，并尝试加入accept队列
+	......					     
+}</code></pre>
+<p>上面这些代码片段主要表明的就是，普通路径通过req创建child sock；SYN Cookie路径则在校验成功后重建child sock。随后内核会尝试将其放入accept队列，并由后面的tcp_child_process处理。</p>
+<p class="image-only"><img src="/blog/assets/source/image/dubbo-online-bug/syn-syack-ack.png" alt="repeatable_read" loading="lazy"></p>
+<h2 id="tcp-check-req">tcp_check_req</h2>
+<p>上面分析完大致的tcp三次握手代码逻辑之后，我们现在看看造成本文问题现象的核心分支tcp_check_req。普通路径中找到对应的req后会执行到这里；SYN Cookie校验走的是另一条重建连接的路径。源码如下:</p>
+<pre><code class="language-">// 下边是client ack回来后的处理过程
+// 笔者为了简单起见，我们省略cookie校验的逻辑
+struct sock *tcp_check_req(......){
+	/* 各种处理，各种校验 */
+	child = inet_csk(sk)-&gt;icsk_af_ops-&gt;syn_recv_sock(sk, skb, req, 	NULL);
+	// 如果syn_recv_sock返回空，则跳到listen_overflow
+	if (child == NULL)
+		goto listen_overflow;
+	......
+listen_overflow:
+	// 如果没有设置tcp_abort_on_overflow则设置acked=1
+	if (!sysctl_tcp_abort_on_overflow) {
+		inet_rsk(req)-&gt;acked = 1;
+		return NULL;
+	}
+	// 增加内核统计参数
+	NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_EMBRYONICRSTS);
+	// 如果设置了tcp_abort_on_overflow则发送reset报文
+	if (!(flg &amp; TCP_FLAG_RST))
+		req-&gt;rsk_ops-&gt;send_reset(sk, skb);
+	// 设置tcp_abort_on_overflow时，将当前req从reqsk_queue中删除
+	inet_csk_reqsk_queue_drop(sk, req, prev);
+	return NULL;</code></pre>
+<p>如果进了listen_overflow分支,server端会有两种现象：不设置tcp_abort_on_overflow时，仅将acked设置为1并保留req，后续仍有机会恢复；设置tcp_abort_on_overflow时，则发送RST并删除req。下图就是走了listen_overflow后不同分支下三次握手的情况:</p>
+<p>不设置tcp_abort_on_overflow</p>
+<p class="image-only"><img src="/blog/assets/source/image/dubbo-online-bug/listen_over_flow_no_reset.png" alt="repeatable_read" loading="lazy"></p>
+<p>设置tcp_abort_on_overflow</p>
+<p class="image-only"><img src="/blog/assets/source/image/dubbo-online-bug/listen_over_flow_reset.png" alt="repeatable_read" loading="lazy"></p>
+<p>由上面看出，设置tcp_abort_on_overflow后，Client发送第三次握手的ACK时会收到RST；不设置tcp_abort_on_overflow时，Client虽然已经进入ESTABLISHED状态，但Server端可能仍未创建对应的完整连接，后续报文到达时会再次尝试完成这个过程。</p>
+<h2 id="%E4%BB%80%E4%B9%88%E6%97%B6%E5%80%99listen-overflow">什么时候listen_overflow</h2>
+<p>看上面的代码，即在syn_recv_sock返回null的时候，会到listen_overflow，对应的tcp协议的函数为:</p>
+<pre><code class="language-">struct sock *tcp_v4_syn_recv_sock(struct sock *sk, struct sk_buff *skb,
+				  struct request_sock *req,
+				  struct dst_entry *dst){
+		....
+		if (sk_acceptq_is_full(sk))
+			goto exit_overflow;
+		......
+}</code></pre>
+<p>accept队列长度主要受下面两个参数限制:</p>
+<pre><code class="language-">取两者中的最小值
+/proc/sys/net/core/somaxconn
+tcp listen函数调用时传入的backlog</code></pre>
+<p>其中，tcp_max_syn_backlog限制的是尚未完成三次握手的SYN队列，不应与accept队列混为一谈。 限于篇幅，就不给出这里判断队列是否为full的源码了。</p>
+<h2 id="%E4%BF%AE%E5%A4%8D%E6%96%B9%E6%A1%88">修复方案</h2>
+<h3 id="%E8%AE%BE%E7%BD%AEkernel%E5%8F%82%E6%95%B0">设置kernel参数</h3>
+<p>一开始笔者仅仅设置了下面这三个参数(天真的以为dubbo考虑到了backlog,设置了一个较大的数值，其实其用了jdk默认的50)</p>
+<pre><code class="language-">注意，这边511是根据redis的建议值设置的
+/proc/sys/net/ipv4/tcp_max_syn_backlog 511
+/proc/sys/net/core/somaxconn 511
+/proc/sys/net/ipv4/tcp_abort_on_overflow 1</code></pre>
+<p>发现依旧有Close old netty client这样的错误日志,但是业务方确告诉笔者已经没有上线流量损失的情况了。笔者上去观察了一下情况，是由于如上图所述reset报文立马发回来，导致能够出错的时间窗口缩小为2s,而不是之前的第一笔必报错，2s内由于没有任何请求，所以大大减少了出错概率。如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/dubbo-online-bug/listen_over_flow_reset_2s.png" alt="repeatable_read" loading="lazy"></p>
+<p>而创建连接和close old netty client日志的间隔都是小于等于两秒也证明了tcp_abort_on_overflow生效了</p>
+<h3 id="dubbo%E4%BB%A3%E7%A0%81%E5%A2%9E%E5%8A%A0backlog%E7%9A%84%E8%AE%BE%E7%BD%AE">dubbo代码增加backlog的设置</h3>
+<p>由于dubbo用的是jdk默认的backlog(50),所以笔者在dubbo源码对应的部分做了调整，如下代码所示:</p>
+<pre><code class="language-">public class NettyServer extends AbstractServer implements Server {
+	......
+	protected void doOpen() throws Throwable {
+		...
+		// 可以从jvm参数中动态调整这个backlog
+		String backlog = System.getProperty(BACK_LOG_KEY);
+		if(StringUtils.isEmpty(backlog)){
+			// 默认为2048；实际有效值受somaxconn限制，修改somaxconn后需要重新执行listen(通常需要重启服务)
+			backlog = DEFAULT_BACK_LOG;
+		}
+		bootstrap.setOption(&quot;backlog&quot;,backlog);
+		......
+	}
+}</code></pre>
+<p>将这个dubbo给业务方用了以后，再也没有对应的报错日志了，dubbo上线也平滑了。</p>
+<h2 id="%E6%80%BB%E7%BB%93">总结</h2>
+<p>事实上，从开始分析问题到猜测要调整backlog所花费的时间并不长。但是笔者喜欢把所有的细节和自己的猜想一一印证上，通过源码分析出来的过程图景能够将所有的问题现象全部解释，是一件很爽快的事情。</p>
+<h2 id="%E5%8E%9F%E6%96%87%E9%93%BE%E6%8E%A5">原文链接</h2>
+<p class="image-only"><img src="/blog/assets/source/image/remote/oscimg.oschina.net/07ff41c32dc984e9117c855abdfce597115-9423c53ce45b.jpg" alt="" loading="lazy"></p></div>
+    <nav class="prev-next"><a href="/blog/articles/bug-dubbo-zookeeper-29ed9784.html"><small>上一篇</small><span>解Bug之路-dubbo应用无法重连zookeeper</span></a><a href="/blog/articles/bug-with-ai-909a31ae.html"><small>下一篇</small><span>解Bug之路-with AI-应用被限流？</span></a></nav>
+  </article>
+  <aside class="article-related">
+    <h2>同类文章</h2><a href="/blog/articles/bug-nat-e95e7827.html">解Bug之路-NAT引发的性能瓶颈</a>
+<a href="/blog/articles/bug-key-c35d61ac.html">解Bug之路-隔离故障点后业务不恢复?-热点Key处理与亚稳态故障</a>
+<a href="/blog/articles/bug-with-ai-909a31ae.html">解Bug之路-with AI-应用被限流？</a>
+<a href="/blog/articles/bug-999-3fc4d0f3.html">解Bug之路-应用999线升高</a>
+<a href="/blog/articles/bug-mysql-seconds-behind-master-f91a1925.html">解Bug之路-MySQL-Seconds_behind_master精度问题引发的思考</a>
+<a href="/blog/articles/bug-zookeeper-1b26955c.html">解Bug之路-ZooKeeper集群拒绝服务</a>
+<a href="/blog/articles/bug-9ac0cd85.html">解Bug之路-主从切换&quot;未成功&quot;?</a>
+<a href="/blog/articles/bug-tcp-bug-d2a0b4b0.html">解Bug之路-TCP使用不当引起的Bug</a>
+<a href="/blog/articles/bug-6995f45c.html">解Bug之路-记一次线上请求偶尔变慢的排查</a>
+<a href="/blog/articles/bug-nginx-502-bad-gateway-a95af6ef.html">解Bug之路-Nginx 502 Bad Gateway</a>
+<a href="/blog/articles/bug-sql-64530c9f.html">解Bug之路-中间件&quot;SQL重复执行&quot;</a>
+<a href="/blog/articles/bug-c0b96e67.html">解Bug之路-记一次调用外网服务概率性失败问题的排查</a>
+<a href="/blog/articles/bug-9db7e3e3.html">解Bug之路-记一次存储故障的排查过程</a>
+<a href="/blog/articles/bug-dubbo-zookeeper-29ed9784.html">解Bug之路-dubbo应用无法重连zookeeper</a>
+<a href="/blog/articles/bug-sql-f1e2ba02.html">解Bug之路-记一次中间件导致的慢SQL排查过程</a>
+<a href="/blog/articles/bug-kernel-tcp-caa0286b.html">解Bug之路-记一次对端kernel宕机后的
+  </aside>
+</main>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, securityLevel: "loose" });
+</script>
+</body>
+</html>

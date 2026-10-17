@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="一般对DB的CRUD操作都由com_query报文封装并发送给DB。com_query报文如下图所示: PacketLength:3byte表示body长度，防&quot;粘包&quot;。 sequenceId:1byte防串包。 body部分:是一个以0x00结尾的字符串，这个字符串就是想要执行的SQL,实际操作中...">
+  <title>MySql协议详解-CRUD与Result篇 - 苍天环绕的小世界</title>
+  <link rel="stylesheet" href="/blog/assets/site.css?v=20261007-contact-page">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="/blog/">苍天环绕的小世界</a>
+  <nav><a href="/blog/">首页</a><a class="nav-featured" href="/blog/featured.html">精品阅读</a><a href="/blog/#articles">文章</a><a href="/blog/contact.html">联系我</a></nav>
+</header>
+<main class="article-layout">
+  <aside class="article-aside">
+    <a class="back-link" href="/blog/">返回首页</a>
+    <div class="toc"><h2>目录</h2><a class="toc-level-1" href="#mysql%E5%8D%8F%E8%AE%AE%E8%AF%A6%E8%A7%A3-crud%E4%B8%8Eresult%E7%AF%87">MySql协议详解-CRUD与Result篇</a>
+<a class="toc-level-2" href="#com-query%E6%8A%A5%E6%96%87">Com_query报文</a>
+<a class="toc-level-2" href="#insert-update%E5%92%8Cdelete">insert,update和delete</a>
+<a class="toc-level-2" href="#select%E5%92%8Cresultset%E6%8A%A5%E6%96%87">Select和ResultSet报文</a>
+<a class="toc-level-3" href="#row%E6%8A%A5%E6%96%87">Row报文</a>
+<a class="toc-level-3" href="#resultset%E6%A0%BC%E5%BC%8F">ResultSet格式</a>
+<a class="toc-level-1" href="#github%E9%93%BE%E6%8E%A5">GitHub链接</a></div>
+  </aside>
+  <article class="article">
+    <header class="article-title">
+      <div class="meta"><span>MySQL</span><time>2017.02.08</time><span>2 min read</span></div>
+      <h1>MySql协议详解-CRUD与Result篇</h1>
+      <p>一般对DB的CRUD操作都由com_query报文封装并发送给DB。com_query报文如下图所示: PacketLength:3byte表示body长度，防&quot;粘包&quot;。 sequenceId:1byte防串包。 body部分:是一个以0x00结尾的字符串，这个字符串就是想要执行的SQL,实际操作中...</p>
+    </header>
+    <div class="prose"><h1 id="mysql%E5%8D%8F%E8%AE%AE%E8%AF%A6%E8%A7%A3-crud%E4%B8%8Eresult%E7%AF%87">MySql协议详解-CRUD与Result篇</h1>
+<h2 id="com-query%E6%8A%A5%E6%96%87">Com_query报文</h2>
+<p>一般对DB的CRUD操作都由com_query报文封装并发送给DB。com_query报文如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/mysqlimage/querypacket.png" alt="image" loading="lazy"></p>
+<p>PacketLength:3byte表示body长度，防&quot;粘包&quot;。 sequenceId:1byte防串包。 body部分:是一个以0x00结尾的字符串，这个字符串就是想要执行的SQL,实际操作中即是一直读body直到读到一个0x00皆为的字符串即停止。</p>
+<h2 id="insert-update%E5%92%8Cdelete">insert,update和delete</h2>
+<p>如果SQL是insert、update或者是delete,则返回的是对应的okay或者error报文。 okay报文的类表示:</p>
+<pre><code class="language-">public class OkPacket extends MySQLPacket {
+    public static final byte FIELD_COUNT = 0x00;
+    public static final byte[] OK = new byte[] { 7, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0 };
+    public static final byte[] AUTH_OK = new byte[] { 7, 0, 0, 2, 0, 0, 0, 2, 0, 0, 0 };
+    public byte fieldCount = FIELD_COUNT;
+    public long affectedRows;
+    public long insertId;
+    public int serverStatus;
+    public int warningCount;
+    public byte[] message;
+}</code></pre>
+<p>error报文的类表示:</p>
+<pre><code class="language-">public class ErrorPacket extends MySQLPacket {
+    public static final byte FIELD_COUNT = (byte) 0xff;
+    private static final byte SQLSTATE_MARKER = (byte) &#x27;#&#x27;;
+    private static final byte[] DEFAULT_SQLSTATE = &quot;HY000&quot;.getBytes();
+
+    public byte fieldCount = FIELD_COUNT;
+    public int errno;
+    public byte mark = SQLSTATE_MARKER;
+    public byte[] sqlState = DEFAULT_SQLSTATE;
+    public byte[] message;
+}</code></pre>
+<h2 id="select%E5%92%8Cresultset%E6%8A%A5%E6%96%87">Select和ResultSet报文</h2>
+<p>如果执行的SQL是select语句，则返回的报文比较复杂，不过笔者已经整理成图的形式。</p>
+<h3 id="row%E6%8A%A5%E6%96%87">Row报文</h3>
+<p>首先ResultSet是由很多行(Row)组成，每一行(Row)就表示了一条记录,Row格式如下所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/mysqlimage/rowpacket.png" alt="image" loading="lazy"></p>
+<p>每一行(row)又分好field_count个字段,这个field_count将会在比Row还高一层的Result格式中描述，下面有详解。 每一个字段都是一个length-value对，length长度是3byte,其读取方法很特殊，现在直接用代码表述:</p>
+<pre><code class="language-">    public int readUB3() {
+        final byte[] b = this.data;
+        int i = b[position++] &amp; 0xff;
+        i |= (b[position++] &amp; 0xff) &lt;&lt; 8;
+        i |= (b[position++] &amp; 0xff) &lt;&lt; 16;
+        return i;
+    }</code></pre>
+<p>获取了length长度之后，则可以根据此读出来后面的value。value的类型也会在后面的Resutl格式中描述。</p>
+<h3 id="resultset%E6%A0%BC%E5%BC%8F">ResultSet格式</h3>
+<p>严格来说ResultSet是由多个独立的报文以协议的形式组织起来，现直接放出ResultSet的协议格式图:</p>
+<p class="image-only"><img src="/blog/assets/source/image/mysqlimage/resultset.png" alt="image" loading="lazy"></p>
+<p>从上图中可以看到，当客户端发送一个select的com_query包后，DB会按照下列步骤返回: Step1:返回一个ResultSetHeader报文，其中包含了fieldCount,在此图就不例出了，现只给出代码定义。</p>
+<pre><code class="language-">public class ResultSetHeaderPacket extends MySQLPacket {
+    public int fieldCount;
+    public long extra;
+}</code></pre>
+<p>Step2:根据读取到的fieldCount来在接下来的byte流里面读取fieldCount个FiledPacket报文,FieldPacket报文的代码定义:</p>
+<pre><code class="language-">public class FieldPacket extends MySQLPacket {
+    private static final byte[] DEFAULT_CATALOG = &quot;def&quot;.getBytes();
+    private static final byte[] FILLER = new byte[2];
+
+    public byte[] catalog = DEFAULT_CATALOG;
+    public byte[] db;
+    public byte[] table;
+    public byte[] orgTable;
+    public byte[] name;
+    public byte[] orgName;
+    public int charsetIndex;
+    public long length;
+    public int type;
+    public int flags;
+    public byte decimals;
+    public byte[] definition;
+}</code></pre>
+<p>具体逻辑请参照github Step3:再读取一个eof包表示field包流的结束 eof包的代码定义:</p>
+<pre><code class="language-">public class EOFPacket extends MySQLPacket {
+    public static final byte FIELD_COUNT = (byte) 0xfe;
+
+    public byte fieldCount = FIELD_COUNT;
+    public int warningCount;
+    public int status = 2;</code></pre>
+<p>Step4:一直读Row,直到读到last eof位置，Row格式已经在上面给过。 Step5:如果读到任何一个error包后，此此读取结束，抛出错误。 Step6:值得注意的是，如果eof中的status &amp; SERVER_MORE_RESULT_EXISTS不为0，表明还有ResultSet。则继续返回到fieldCount阶段进行下一步的读取。 Step7:至此，整个ResultSet读取完毕。</p>
+<h1 id="github%E9%93%BE%E6%8E%A5">GitHub链接</h1>
+<p>https://github.com/alchemystar/Lancelot.git</p></div>
+    <nav class="prev-next"><a href="/blog/articles/mysql-8938d3bc.html"><small>上一篇</small><span>MySql协议讲解-事务协议</span></a><a href="/blog/articles/mysql-handshake-fdfe17a7.html"><small>下一篇</small><span>MySql协议详解-HandShake握手篇</span></a></nav>
+  </article>
+  <aside class="article-related">
+    <h2>同类文章</h2><a href="/blog/articles/mysql-seconds-behind-master-fceee9b1.html">MySQL-Seconds_behind_master的精度误差</a>
+<a href="/blog/articles/mysql-io-b7cf67b1.html">从MySQL源码看其网络IO模型</a>
+<a href="/blog/articles/mysql-mvcc-f01bb5cb.html">MySQL多版本并发控制机制(MVCC)-源码浅析</a>
+<a href="/blog/articles/mysql-6961acfc.html">MySql-两阶段加锁协议</a>
+<a href="/blog/articles/mysql-proxy-04bb965a.html">MySql-Proxy之多路结果集归并</a>
+<a href="/blog/articles/mysql-binlog-61d26458.html">MySql-Binlog协议详解-报文篇</a>
+<a href="/blog/articles/mysql-binlog-c2503567.html">MySql-Binlog协议详解-流程篇</a>
+<a href="/blog/articles/mysql-8938d3bc.html">MySql协议讲解-事务协议</a>
+<a href="/blog/articles/mysql-handshake-fdfe17a7.html">MySql协议详解-HandShake握手篇</a>
+  </aside>
+</main>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, securityLevel: "loose" });
+</script>
+</body>
+</html>

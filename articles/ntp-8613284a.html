@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="我们的服务器时间校准一般是通过ntp进程去校准的。但由于校准这个动作，会导致时钟跳跃变化的现象。 而这种情况里面，往往回拨最能引起我们的困扰,回拨如下所示: 假设有一个任务每天0点时候获取昨天所有的数据进行对账，正常情况和时钟回拨的情况如下图所示: 针对这种情况,笔者让业务调整了调度触发时间，不要精...">
+  <title>ntp导致的时钟回拨 - 苍天环绕的小世界</title>
+  <link rel="stylesheet" href="/blog/assets/site.css?v=20261007-contact-page">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="/blog/">苍天环绕的小世界</a>
+  <nav><a href="/blog/">首页</a><a class="nav-featured" href="/blog/featured.html">精品阅读</a><a href="/blog/#articles">文章</a><a href="/blog/contact.html">联系我</a></nav>
+</header>
+<main class="article-layout">
+  <aside class="article-aside">
+    <a class="back-link" href="/blog/">返回首页</a>
+    <div class="toc"><h2>目录</h2><a class="toc-level-1" href="#ntp%E5%AF%BC%E8%87%B4%E7%9A%84%E6%97%B6%E9%92%9F%E5%9B%9E%E6%8B%A8">ntp导致的时钟回拨</a>
+<a class="toc-level-2" href="#%E6%97%B6%E9%92%9F%E5%9B%9E%E6%8B%A8">时钟回拨</a>
+<a class="toc-level-2" href="#%E4%BC%9A%E5%BC%95%E8%B5%B7%E4%BB%80%E4%B9%88%E9%97%AE%E9%A2%98">会引起什么问题</a>
+<a class="toc-level-3" href="#%E5%87%86%E7%82%B9%E8%B0%83%E5%BA%A6%E4%BB%BB%E5%8A%A1%E7%9A%84%E8%AF%AF%E5%88%A4">准点调度任务的误判</a>
+<a class="toc-level-3" href="#%E5%94%AF%E4%B8%80%E5%BA%8F%E5%88%97%E5%8F%B7-%E9%9B%AA%E8%8A%B1%E7%AE%97%E6%B3%95">唯一序列号(雪花算法)</a>
+<a class="toc-level-2" href="#ntpd%E7%9A%84%E6%97%B6%E9%92%9F%E5%9B%9E%E6%8B%A8-%E8%B7%B3%E5%8F%98-%E6%9D%A1%E4%BB%B6">ntpd的时钟回拨(跳变)条件</a>
+<a class="toc-level-3" href="#x%E9%80%89%E9%A1%B9">-x选项</a>
+<a class="toc-level-3" href="#stepback-stepback">stepback stepback</a></div>
+  </aside>
+  <article class="article">
+    <header class="article-title">
+      <div class="meta"><span>其它</span><time>2021.05.26</time><span>1 min read</span></div>
+      <h1>ntp导致的时钟回拨</h1>
+      <p>我们的服务器时间校准一般是通过ntp进程去校准的。但由于校准这个动作，会导致时钟跳跃变化的现象。 而这种情况里面，往往回拨最能引起我们的困扰,回拨如下所示: 假设有一个任务每天0点时候获取昨天所有的数据进行对账，正常情况和时钟回拨的情况如下图所示: 针对这种情况,笔者让业务调整了调度触发时间，不要精...</p>
+    </header>
+    <div class="prose"><h1 id="ntp%E5%AF%BC%E8%87%B4%E7%9A%84%E6%97%B6%E9%92%9F%E5%9B%9E%E6%8B%A8">ntp导致的时钟回拨</h1>
+<h2 id="%E6%97%B6%E9%92%9F%E5%9B%9E%E6%8B%A8">时钟回拨</h2>
+<p>我们的服务器时间校准一般是通过ntp进程去校准的。但由于校准这个动作，会导致时钟跳跃变化的现象。 而这种情况里面，往往回拨最能引起我们的困扰,回拨如下所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/ntpd/ntpd_adjust.png" alt="codegen" loading="lazy"></p>
+<h2 id="%E4%BC%9A%E5%BC%95%E8%B5%B7%E4%BB%80%E4%B9%88%E9%97%AE%E9%A2%98">会引起什么问题</h2>
+<h3 id="%E5%87%86%E7%82%B9%E8%B0%83%E5%BA%A6%E4%BB%BB%E5%8A%A1%E7%9A%84%E8%AF%AF%E5%88%A4">准点调度任务的误判</h3>
+<p>假设有一个任务每天0点时候获取昨天所有的数据进行对账，正常情况和时钟回拨的情况如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/ntpd/ntpd_business.png" alt="codegen" loading="lazy"></p>
+<p>针对这种情况,笔者让业务调整了调度触发时间，不要精确在准点，以避免此问题。</p>
+<h3 id="%E5%94%AF%E4%B8%80%E5%BA%8F%E5%88%97%E5%8F%B7-%E9%9B%AA%E8%8A%B1%E7%AE%97%E6%B3%95">唯一序列号(雪花算法)</h3>
+<p>时钟回拨的情况也会影响到采用雪花算法这种对时间戳要求单调的算法。很明显的，时间戳回调后，极易形成重复的序列号。 对于这种情况我们采用预留序列号段，在检测到这种情况后，将预留序列号分配出去，进而解决这一问题。</p>
+<h2 id="ntpd%E7%9A%84%E6%97%B6%E9%92%9F%E5%9B%9E%E6%8B%A8-%E8%B7%B3%E5%8F%98-%E6%9D%A1%E4%BB%B6">ntpd的时钟回拨(跳变)条件</h2>
+<p>事实上，ntpd本身还有另一种方案，即通过调整滴答频率来让我们的本地时钟慢慢的和精确时间match。 但是，如果本机时间和精确时间(从ntpd服务器获取的时间)相差过大(&gt; stepout threshold 128ms)，则ntpd会直接采用跳跃变化的方式修正时间。代码如下所示:</p>
+<pre><code class="language-">ntp_loopfilter.c
+
+double	clock_max = CLOCK_MAX; // .128也就是128ms
+
+int local_lock(...) {
+	// 差距&gt;128ms之后，选择跳变
+	if (fabs(fp_offset) &gt; clock_max &amp;&amp; clock_max &gt; 0) {
+		......
+		// 修正simclock.local_time
+		step_systime(fp_offset);
+		......
+	}
+}</code></pre>
+<p>而在我们的线上，在/var/log/message中经常能见到时钟跳变的输出。</p>
+<h3 id="x%E9%80%89%E9%A1%B9">-x选项</h3>
+<p>我们采用-x选项，可以将stepout threshold(128ms)提升到600s。这样，不是太极端的情况，应该都不会触发到时钟回拨。但这会导致长时间时间戳不准确的问题(毕竟，调整滴答频率来慢慢match比较慢)。</p>
+<h3 id="stepback-stepback">stepback stepback</h3>
+<p>在高版本的ntpd中，还可以有stepback选项，如果设置为0的话，则不会回拨。</p></div>
+    <nav class="prev-next"><a href="/blog/articles/prometheus-0f36c4b7.html"><small>上一篇</small><span>Prometheus时序数据库-磁盘中的存储结构</span></a><a href="/blog/articles/tcp-syncookie-0db101f6.html"><small>下一篇</small><span>tcp_syncookie的坑</span></a></nav>
+  </article>
+  <aside class="article-related">
+    <h2>同类文章</h2><a href="/blog/articles/post-d9d326ca.html">产线内存&quot;耗尽&quot;</a>
+<a href="/blog/articles/post-0b648183.html">我的编程之旅</a>
+  </aside>
+</main>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, securityLevel: "loose" });
+</script>
+</body>
+</html>

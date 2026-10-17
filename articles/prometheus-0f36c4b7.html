@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="之前的文章里，笔者详细描述了监控数据在Prometheus内存中的结构。而其在磁盘中的存储结构，也是非常有意思的,关于这部分内容，将在本篇文章进行阐述。 首先我们来看Prometheus运行后，所形成的文件目录结构 在笔者自己的机器上的具体结构如下: 一个Block就是一个独立的小型数据库，其保存了...">
+  <title>Prometheus时序数据库-磁盘中的存储结构 - 苍天环绕的小世界</title>
+  <link rel="stylesheet" href="/blog/assets/site.css?v=20261007-contact-page">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="/blog/">苍天环绕的小世界</a>
+  <nav><a href="/blog/">首页</a><a class="nav-featured" href="/blog/featured.html">精品阅读</a><a href="/blog/#articles">文章</a><a href="/blog/contact.html">联系我</a></nav>
+</header>
+<main class="article-layout">
+  <aside class="article-aside">
+    <a class="back-link" href="/blog/">返回首页</a>
+    <div class="toc"><h2>目录</h2><a class="toc-level-1" href="#prometheus%E6%97%B6%E5%BA%8F%E6%95%B0%E6%8D%AE%E5%BA%93-%E7%A3%81%E7%9B%98%E4%B8%AD%E7%9A%84%E5%AD%98%E5%82%A8%E7%BB%93%E6%9E%84">Prometheus时序数据库-磁盘中的存储结构</a>
+<a class="toc-level-2" href="#%E5%89%8D%E8%A8%80">前言</a>
+<a class="toc-level-2" href="#%E7%A3%81%E7%9B%98%E7%9B%AE%E5%BD%95%E7%BB%93%E6%9E%84">磁盘目录结构</a>
+<a class="toc-level-3" href="#block">Block</a>
+<a class="toc-level-2" href="#chunks%E7%BB%93%E6%9E%84">Chunks结构</a>
+<a class="toc-level-3" href="#cut%E6%96%87%E4%BB%B6%E5%88%87%E5%88%86">CUT文件切分</a>
+<a class="toc-level-3" href="#chunks%E6%96%87%E4%BB%B6%E9%80%9A%E8%BF%87mmap%E5%8E%BB%E8%AE%BF%E9%97%AE">chunks文件通过mmap去访问</a>
+<a class="toc-level-2" href="#index%E7%B4%A2%E5%BC%95%E7%BB%93%E6%9E%84">index索引结构</a>
+<a class="toc-level-3" href="#%E5%AF%BB%E5%9D%80%E8%BF%87%E7%A8%8B">寻址过程</a>
+<a class="toc-level-3" href="#toc-table-of-content">TOC(Table Of Content)</a>
+<a class="toc-level-3" href="#posting-offset-table-%E4%BB%A5%E5%8F%8A-posting%E5%80%92%E6%8E%92%E7%B4%A2%E5%BC%95">Posting offset table 以及 Posting倒排索引</a>
+<a class="toc-level-3" href="#series">Series</a>
+<a class="toc-level-3" href="#symboltable">SymbolTable</a>
+<a class="toc-level-3" href="#label-index%E4%BB%A5%E5%8F%8Alabel-table">Label Index以及Label Table</a>
+<a class="toc-level-2" href="#%E5%AE%8C%E6%95%B4%E7%9A%84index%E6%96%87%E4%BB%B6%E7%BB%93%E6%9E%84">完整的index文件结构</a>
+<a class="toc-level-2" href="#tombstones">tombstones</a>
+<a class="toc-level-2" href="#%E6%80%BB%E7%BB%93">总结</a></div>
+  </aside>
+  <article class="article">
+    <header class="article-title">
+      <div class="meta"><span>Prometheus</span><time>2021.02.09</time><span>4 min read</span></div>
+      <h1>Prometheus时序数据库-磁盘中的存储结构</h1>
+      <p>之前的文章里，笔者详细描述了监控数据在Prometheus内存中的结构。而其在磁盘中的存储结构，也是非常有意思的,关于这部分内容，将在本篇文章进行阐述。 首先我们来看Prometheus运行后，所形成的文件目录结构 在笔者自己的机器上的具体结构如下: 一个Block就是一个独立的小型数据库，其保存了...</p>
+    </header>
+    <div class="prose"><h1 id="prometheus%E6%97%B6%E5%BA%8F%E6%95%B0%E6%8D%AE%E5%BA%93-%E7%A3%81%E7%9B%98%E4%B8%AD%E7%9A%84%E5%AD%98%E5%82%A8%E7%BB%93%E6%9E%84">Prometheus时序数据库-磁盘中的存储结构</h1>
+<h2 id="%E5%89%8D%E8%A8%80">前言</h2>
+<p>之前的文章里，笔者详细描述了监控数据在Prometheus内存中的结构。而其在磁盘中的存储结构，也是非常有意思的,关于这部分内容，将在本篇文章进行阐述。</p>
+<h2 id="%E7%A3%81%E7%9B%98%E7%9B%AE%E5%BD%95%E7%BB%93%E6%9E%84">磁盘目录结构</h2>
+<p>首先我们来看Prometheus运行后，所形成的文件目录结构</p>
+<p class="image-only"><img src="/blog/assets/source/image/prometheus_storage/disk_dir.png" alt="codegen" loading="lazy"></p>
+<p>在笔者自己的机器上的具体结构如下:</p>
+<pre><code class="language-">prometheus-data
+	|-01EY0EH5JA3ABCB0PXHAPP999D (block)
+	|-01EY0EH5JA3QCQB0PXHAPP999D (block)
+		|-chunks
+			|-000001
+			|-000002
+			.....
+			|-000021
+		|-index
+		|-meta.json
+		|-tombstones
+	|-wal
+	|-chunks_head</code></pre>
+<h3 id="block">Block</h3>
+<p>一个Block就是一个独立的小型数据库，其保存了一段时间内所有查询所用到的信息。包括标签/索引/符号表数据等等。Block的实质就是将一段时间里的内存数据组织成文件形式保存下来。</p>
+<p class="image-only"><img src="/blog/assets/source/image/prometheus_storage/mem_disk.png" alt="codegen" loading="lazy"></p>
+<p>最近的Block一般是存储了2小时的数据，而较为久远的Block则会通过compactor进行合并，一个Block可能存储了若干小时的信息。值得注意的是，合并操作只是减少了索引的大小(尤其是符号表的合并)，而本身数据(chunks)的大小并没有任何改变。</p>
+<h4 id="meta-json">meta.json</h4>
+<p>我们可以通过检查meta.json来得到当前Block的一些元信息。</p>
+<pre><code class="language-">{
+	&quot;ulid&quot;:&quot;01EY0EH5JA3QCQB0PXHAPP999D&quot;
+	// maxTime-minTime = 7200s =&gt; 2 h
+	&quot;minTime&quot;: 1611664000000
+	&quot;maxTime&quot;: 1611671200000
+	&quot;stats&quot;: {
+		&quot;numSamples&quot;: 1505855631,
+		&quot;numSeries&quot;: 12063563,
+		&quot;numChunks&quot;: 12063563
+	}
+	&quot;compaction&quot;:{
+		&quot;level&quot; : 1
+		&quot;sources: [
+			&quot;01EY0EH5JA3QCQB0PXHAPP999D&quot;
+		]
+	}
+	&quot;version&quot;:1
+}</code></pre>
+<p>其中的元信息非常清楚明了。这个Block记录了从2个小时的数据。</p>
+<p class="image-only"><img src="/blog/assets/source/image/prometheus_storage/one_block.png" alt="codegen" loading="lazy"></p>
+<p>让我们再找一个比较陈旧的Block看下它的meta.json.</p>
+<pre><code class="language-">	&quot;ulid&quot;:&quot;01EXTEH5JA3QCQB0PXHAPP999D&quot;,
+	// maxTime - maxTime =&gt;162h
+	&quot;minTime&quot;:1610964800000,
+	&quot;maxTime&quot;:1611548000000
+	......
+	&quot;compaction&quot;:{
+		&quot;level&quot;: 5,
+		&quot;sources: [
+			31个01EX......
+		]
+	},
+	&quot;parents: [
+		{	
+			&quot;ulid&quot;: 01EXTEH5JA3QCQB1PXHAPP999D
+			...
+		}
+		{	
+			&quot;ulid&quot;: 01EXTEH6JA3QCQB1PXHAPP999D
+			...
+		}
+				{	
+			&quot;ulid&quot;: 01EXTEH5JA31CQB1PXHAPP999D
+			...
+		}
+	]</code></pre>
+<p>从中我们可以看到，该Block是由31个原始Block经历5次压缩而来。最后一次压缩的三个Block ulid记录在parents中。如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/prometheus_storage/compact-block.png" alt="codegen" loading="lazy"></p>
+<h2 id="chunks%E7%BB%93%E6%9E%84">Chunks结构</h2>
+<h3 id="cut%E6%96%87%E4%BB%B6%E5%88%87%E5%88%86">CUT文件切分</h3>
+<p>所有的Chunk文件在磁盘上都不会大于512M,对应的源码为:</p>
+<pre><code class="language-">func (w *Writer) WriteChunks(chks ...Meta) error {
+	......
+	for i, chk := range chks {
+		cutNewBatch := (i != 0) &amp;&amp; (batchSize+SegmentHeaderSize &gt; w.segmentSize)
+		......
+		if cutNewBatch {
+			......
+		}
+		......
+	}
+}</code></pre>
+<p>当写入磁盘单个文件超过512M的时候，就会自动切分一个新的文件。</p>
+<p>一个Chunks文件包含了非常多的内存Chunk结构,如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/prometheus_storage/chunk_file.png" alt="codegen" loading="lazy"></p>
+<p>图中也标出了，我们是怎么寻找对应Chunk的。通过将文件名(000001，前32位)以及(offset,后32位)编码到一个int类型的refId中，使得我们可以轻松的通过这个id获取到对应的chunk数据。</p>
+<h3 id="chunks%E6%96%87%E4%BB%B6%E9%80%9A%E8%BF%87mmap%E5%8E%BB%E8%AE%BF%E9%97%AE">chunks文件通过mmap去访问</h3>
+<p>由于chunks文件大小基本固定(最大512M),所以我们很容易的可以通过mmap去访问对应的数据。直接将对应文件的读操作交给操作系统，既省心又省力。对应代码为:</p>
+<pre><code class="language-">func NewDirReader(dir string, pool chunkenc.Pool) (*Reader, error) {
+	......
+	for _, fn := range files {
+		f, err := fileutil.OpenMmapFile(fn)
+		......
+	}
+	......
+	bs = append(bs, realByteSlice(f.Bytes()))
+}
+通过sgmBytes := s.bs[offset]就直接能获取对应的数据</code></pre>
+<p class="image-only"><img src="/blog/assets/source/image/prometheus_storage/mmap.png" alt="codegen" loading="lazy"></p>
+<h2 id="index%E7%B4%A2%E5%BC%95%E7%BB%93%E6%9E%84">index索引结构</h2>
+<p>前面介绍完chunk文件，我们就可以开始阐述最复杂的索引结构了。</p>
+<h3 id="%E5%AF%BB%E5%9D%80%E8%BF%87%E7%A8%8B">寻址过程</h3>
+<p>索引就是为了让我们快速的找到想要的内容，为了便于理解。笔者就通过一次数据的寻址来探究Prometheus的磁盘索引结构。考虑查询一个</p>
+<pre><code class="language-">拥有系列三个标签
+({__name__:http_requests}{job:api-server}{instance:0})
+且时间为start/end的所有序列数据</code></pre>
+<p>我们先从选择Block开始,遍历所有Block的meta.json，找到具体的Block</p>
+<p class="image-only"><img src="/blog/assets/source/image/prometheus_storage/find_block_time.png" alt="codegen" loading="lazy"></p>
+<p>前文说了，通过Labels找数据是通过倒排索引。我们的倒排索引是保存在index文件里面的。 那么怎么在这个单一文件里找到倒排索引的位置呢？这就引入了TOC(Table Of Content)</p>
+<h3 id="toc-table-of-content">TOC(Table Of Content)</h3>
+<p class="image-only"><img src="/blog/assets/source/image/prometheus_storage/toc.png" alt="codegen" loading="lazy"></p>
+<p>由于index文件一旦形成之后就不再会改变，所以Prometheus也依旧使用mmap来进行操作。采用mmap读取TOC非常容易:</p>
+<pre><code class="language-">func NewTOCFromByteSlice(bs ByteSlice) (*TOC, error) {
+	......
+	// indexTOCLen = 6*8+4 = 52
+	b := bs.Range(bs.Len()-indexTOCLen, bs.Len())
+	......
+	return &amp;TOC{
+		Symbols:           d.Be64(),
+		Series:            d.Be64(),
+		LabelIndices:      d.Be64(),
+		LabelIndicesTable: d.Be64(),
+		Postings:          d.Be64(),
+		PostingsTable:     d.Be64(),
+	}, nil
+}</code></pre>
+<h3 id="posting-offset-table-%E4%BB%A5%E5%8F%8A-posting%E5%80%92%E6%8E%92%E7%B4%A2%E5%BC%95">Posting offset table 以及 Posting倒排索引</h3>
+<p>首先我们访问的是Posting offset table。由于倒排索引按照不同的LabelPair(key/value)会有非常多的条目。所以Posing offset table就是决定到底访问哪一条Posting索引。offset就是指的这一Posting条目在文件中的偏移。</p>
+<p class="image-only"><img src="/blog/assets/source/image/prometheus_storage/posting_offset_table.png" alt="codegen" loading="lazy"></p>
+<h3 id="series">Series</h3>
+<p>我们通过三条Postings倒排索引索引取交集得出</p>
+<pre><code class="language-">{series1,Series2,Series3,Series4}
+∩
+{series1,Series2,Series3}
+∩
+{Series2,Series3}
+=
+{Series2,Series3}</code></pre>
+<p>也就是要读取Series2和Serie3中的数据，而Posting中的Ref(Series2)和Ref(Series3)即为这两Series在index文件中的偏移。</p>
+<p class="image-only"><img src="/blog/assets/source/image/prometheus_storage/SeriesTable.png" alt="codegen" loading="lazy"></p>
+<p>Series以Delta的形式记录了chunkId以及该chunk包含的时间范围。这样就可以很容易过滤出我们需要的chunk,然后再按照chunk文件的访问，即可找到最终的原始数据。</p>
+<h3 id="symboltable">SymbolTable</h3>
+<p>值得注意的是，为了尽量减少我们文件的大小，对于Label的Name和Value这些有限的数据，我们会按照字母序存在符号表中。由于是有序的，所以我们可以直接将符号表认为是一个 []string切片。然后通过切片的下标去获取对应的sting。考虑如下符号表:</p>
+<p class="image-only"><img src="/blog/assets/source/image/prometheus_storage/SymbolTable.png" alt="codegen" loading="lazy"></p>
+<p>读取index文件时候，会将SymbolTable全部加载到内存中，并组织成symbols []string这样的切片形式，这样一个Series中的所有标签值即可通过切片下标访问得到。</p>
+<h3 id="label-index%E4%BB%A5%E5%8F%8Alabel-table">Label Index以及Label Table</h3>
+<p>事实上，前面的介绍已经将一个普通数据寻址的过程全部讲完了。但是index文件中还包含label索引以及label Table，这两个是用来记录一个Label下面所有可能的值而存在的。 这样，在正则的时候就可以非常容易的找到我们需要哪些LabelPair。详情可以见前篇。</p>
+<p class="image-only"><img src="/blog/assets/source/image/prometheus_storage/label_index.png" alt="codegen" loading="lazy"></p>
+<p>事实上，真正的Label Index比图中要复杂一点。它设计成一条LabelIndex可以表示(多个标签组合)的所有数据。不过在Prometheus代码中只会采用存储一个标签对应所有值的形式。</p>
+<h2 id="%E5%AE%8C%E6%95%B4%E7%9A%84index%E6%96%87%E4%BB%B6%E7%BB%93%E6%9E%84">完整的index文件结构</h2>
+<p>这里直接给出完整的index文件结构，摘自Prometheus中index.md文档。</p>
+<pre><code class="language-">┌────────────────────────────┬─────────────────────┐
+│ magic(0xBAAAD700) &lt;4b&gt;     │ version(1) &lt;1 byte&gt; │
+├────────────────────────────┴─────────────────────┤
+│ ┌──────────────────────────────────────────────┐ │
+│ │                 Symbol Table                 │ │
+│ ├──────────────────────────────────────────────┤ │
+│ │                    Series                    │ │
+│ ├──────────────────────────────────────────────┤ │
+│ │                 Label Index 1                │ │
+│ ├──────────────────────────────────────────────┤ │
+│ │                      ...                     │ │
+│ ├──────────────────────────────────────────────┤ │
+│ │                 Label Index N                │ │
+│ ├──────────────────────────────────────────────┤ │
+│ │                   Postings 1                 │ │
+│ ├──────────────────────────────────────────────┤ │
+│ │                      ...                     │ │
+│ ├──────────────────────────────────────────────┤ │
+│ │                   Postings N                 │ │
+│ ├──────────────────────────────────────────────┤ │
+│ │               Label Index Table              │ │
+│ ├──────────────────────────────────────────────┤ │
+│ │                 Postings Table               │ │
+│ ├──────────────────────────────────────────────┤ │
+│ │                      TOC                     │ │
+│ └──────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────┘</code></pre>
+<h2 id="tombstones">tombstones</h2>
+<p>由于Prometheus Block的数据一般在写完后就不会变动。如果要删除部分数据，就只能记录一下删除数据的范围，由下一次compactor组成新block的时候删除。而记录这些信息的文件即是tomstones。</p>
+<h2 id="%E6%80%BB%E7%BB%93">总结</h2>
+<p>Prometheus作为时序数据库，设计了各种文件结构来保存海量的监控数据，同时还兼顾了性能。只有彻底了解其存储结构，才能更好的指导我们应用它！</p>
+<p>欢迎大家关注我公众号，里面有各种干货，还有大礼包相送哦!</p>
+<p class="image-only"><img src="/blog/assets/source/image/remote/oscimg.oschina.net/up-0124e4cdd8e9cecb13071dad7b6544ebb71-ff1bfa7e71cd.png" alt="" loading="lazy"></p></div>
+    <nav class="prev-next"><a href="/blog/articles/prometheus-d6d7222d.html"><small>上一篇</small><span>Prometheus时序数据库-数据的查询</span></a><a href="/blog/articles/ntp-8613284a.html"><small>下一篇</small><span>ntp导致的时钟回拨</span></a></nav>
+  </article>
+  <aside class="article-related">
+    <h2>同类文章</h2><a href="/blog/articles/prometheus-2ac42a1a.html">Prometheus时序数据库-报警的计算</a>
+<a href="/blog/articles/prometheus-c5470827.html">Prometheus时序数据库-内存中的存储结构</a>
+<a href="/blog/articles/prometheus-0d55a1d8.html">Prometheus时序数据库-数据的抓取</a>
+<a href="/blog/articles/prometheus-d6d7222d.html">Prometheus时序数据库-数据的查询</a>
+<a href="/blog/articles/prometheus-f7c2fc92.html">Prometheus时序数据库-数据的插入</a>
+  </aside>
+</main>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, securityLevel: "loose" });
+</script>
+</body>
+</html>

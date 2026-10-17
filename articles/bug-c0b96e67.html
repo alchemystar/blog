@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="核心反常点：调用外网服务只是概率性失败，应用逻辑和服务端都不像有问题，真正异常藏在基础网络环境、路由/出口与联调链路的差异里。">
+  <title>解Bug之路-记一次调用外网服务概率性失败问题的排查 - 苍天环绕的小世界</title>
+  <link rel="stylesheet" href="/blog/assets/site.css?v=20261007-contact-page">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="/blog/">苍天环绕的小世界</a>
+  <nav><a href="/blog/">首页</a><a class="nav-featured" href="/blog/featured.html">精品阅读</a><a href="/blog/#articles">文章</a><a href="/blog/contact.html">联系我</a></nav>
+</header>
+<main class="article-layout">
+  <aside class="article-aside">
+    <a class="back-link" href="/blog/">返回首页</a>
+    <div class="toc"><h2>目录</h2><a class="toc-level-1" href="#%E8%A7%A3bug%E4%B9%8B%E8%B7%AF-%E8%AE%B0%E4%B8%80%E6%AC%A1%E8%B0%83%E7%94%A8%E5%A4%96%E7%BD%91%E6%9C%8D%E5%8A%A1%E6%A6%82%E7%8E%87%E6%80%A7%E5%A4%B1%E8%B4%A5%E9%97%AE%E9%A2%98%E7%9A%84%E6%8E%92%E6%9F%A5">解Bug之路-记一次调用外网服务概率性失败问题的排查</a>
+<a class="toc-level-2" href="#%E5%89%8D%E8%A8%80">前言</a>
+<a class="toc-level-2" href="#%E8%B5%B7%E5%9B%A0">起因</a>
+<a class="toc-level-2" href="#%E7%9D%80%E6%89%8B%E6%8E%92%E6%9F%A5">着手排查</a>
+<a class="toc-level-2" href="#%E6%8A%93%E5%8C%85">抓包</a>
+<a class="toc-level-2" href="#%E6%8A%93%E5%8C%85%E7%BB%93%E6%9E%9C%E5%88%86%E6%9E%90">抓包结果分析</a>
+<a class="toc-level-2" href="#%E7%99%BB%E9%99%86%E5%AF%B9%E7%AB%AF%E6%9C%8D%E5%8A%A1%E5%99%A8%E8%BF%9B%E8%A1%8C%E6%8E%92%E6%9F%A5">登陆对端服务器进行排查</a>
+<a class="toc-level-2" href="#linux%E6%BA%90%E7%A0%81%E5%88%86%E6%9E%90">linux源码分析</a>
+<a class="toc-level-2" href="#%E5%92%8C%E9%97%AE%E9%A2%98%E8%A1%A8%E8%B1%A1%E4%B8%80%E4%B8%80%E9%AA%8C%E8%AF%81">和问题表象一一验证</a>
+<a class="toc-level-3" href="#%E4%B8%BA%E4%BB%80%E4%B9%88%E4%BC%9A%E5%87%BA%E7%8E%B0%E4%B8%80%E5%8F%B0nginx%E4%B8%80%E7%9B%B4okay-%E4%B8%80%E5%8F%B0nginx%E5%A4%B1%E8%B4%A5%E7%9A%84%E6%83%85%E5%86%B5">为什么会出现一台nginx一直okay，一台nginx失败的情况</a>
+<a class="toc-level-3" href="#%E4%B8%BA%E4%BB%80%E4%B9%88%E5%AF%B9%E7%AB%AF%E8%87%AA%E6%B5%8B%E4%B8%80%E7%9B%B4%E6%AD%A3%E5%B8%B8">为什么对端自测一直正常</a>
+<a class="toc-level-3" href="#%E4%B8%BA%E4%BB%80%E4%B9%88nginx2%E8%B0%83%E7%94%A8%E5%85%B6%E5%AE%83%E6%9C%8D%E5%8A%A1%E6%98%AF%E6%AD%A3%E5%B8%B8%E7%9A%84">为什么nginx2调用其它服务是正常的</a>
+<a class="toc-level-2" href="#%E6%80%BB%E7%BB%93">总结</a>
+<a class="toc-level-2" href="#%E5%8E%9F%E6%96%87%E9%93%BE%E6%8E%A5">原文链接</a></div>
+  </aside>
+  <article class="article">
+    <header class="article-title">
+      <div class="meta"><span>解Bug之路</span><time>2020.06.09</time><span>6 min read</span></div>
+      <h1>解Bug之路-记一次调用外网服务概率性失败问题的排查</h1>
+      <p>核心反常点：调用外网服务只是概率性失败，应用逻辑和服务端都不像有问题，真正异常藏在基础网络环境、路由/出口与联调链路的差异里。</p>
+    </header>
+    <div class="prose"><h1 id="%E8%A7%A3bug%E4%B9%8B%E8%B7%AF-%E8%AE%B0%E4%B8%80%E6%AC%A1%E8%B0%83%E7%94%A8%E5%A4%96%E7%BD%91%E6%9C%8D%E5%8A%A1%E6%A6%82%E7%8E%87%E6%80%A7%E5%A4%B1%E8%B4%A5%E9%97%AE%E9%A2%98%E7%9A%84%E6%8E%92%E6%9F%A5">解Bug之路-记一次调用外网服务概率性失败问题的排查</h1>
+<h2 id="%E5%89%8D%E8%A8%80">前言</h2>
+<p>和外部联调一直是令人困扰的问题，尤其是一些基础环境配置导致的问题。笔者在一次偶然情况下解决了一个调用外网服务概率性失败的问题。在此将排查过程发出来，希望读者遇到此问题的时候，能够知道如何入手。</p>
+<h2 id="%E8%B5%B7%E5%9B%A0">起因</h2>
+<p>笔者的新系统上线，需要PE执行操作。但是负责操作的PE确和另一个开发在互相纠缠，让笔者等了半个小时之久。本着加速系统上线的想法，就想着能不能帮他们快速处理掉问题，好让笔者早点发完回去coding。一打听，这个问题竟然扯了3个月之久，问题现象如下:</p>
+<p class="image-only"><img src="/blog/assets/source/image/tcp_timestamps/nat_env.png" alt="image codegen" loading="lazy"></p>
+<p>每个client都会以将近1/2的概率失败,而且报错都为:</p>
+<pre><code class="language-java">java.net.SocketTimeoutException: Read timed out</code></pre>
+<h2 id="%E7%9D%80%E6%89%8B%E6%8E%92%E6%9F%A5">着手排查</h2>
+<p>和app开发以及对应的PE交流发现，app和nginx之间是短连接，由于是socketTimeOutException,于是能够排除app和nginx建立连接之间的问题。去nginx上排查日志，发现一个奇异的现象，如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/tcp_timestamps/one_nginx_okay.png" alt="image codegen" loading="lazy"></p>
+<p>所有的app server都是调用一台nginx一直成功，而调用另一台nginx大概率失败。而两台nginx机器的配置一模一样，还有一个奇怪的点是,只有在调用出问题的对端服务器时才会失败，其它业务没有任何影响,如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/tcp_timestamps/nginx_two_business.png" alt="image codegen" loading="lazy"></p>
+<p>由于这两个诡异的现象导致开发和PE争执不下，按照第一个现象一台nginx好一台nginx报错那么第二台nginx有问题是合理的推断,所以开发要求换nginx。按照第二个现象,只有调用这个业务才会出错，其它业务没有问题，那么肯定是对端业务服务器的问题,PE觉得应该不是nginx的锅。争执了半天后，初步拟定方案就是扩容nginx看看效果-_-!笔者觉得这个方案并不靠谱，盲目的扩容可能会引起反效果。还是先抓包看看情况吧。</p>
+<h2 id="%E6%8A%93%E5%8C%85">抓包</h2>
+<p>其实笔者觉得nginx作为这么通用的组件不应该出现问题，问题应该出现在对端服务器上。而根据对端开发反应，他自己curl没问题，并现场在他自己的服务器上做了N次curl也没有任何问题(由于这个问题僵持不下，他被派到我们公司来协助排查)。于是找网工在防火墙外抓包,抓包结果如下:</p>
+<table><thead><tr><th>时间点</th><th>源ip</th><th>目的ip</th><th>协议</th><th>info</th></tr></thead><tbody>
+<tr><td>2019-07-25 16:45:41</td><td>20.1.1.1</td><td>30.1.1.1</td><td>tcp</td><td>58850-&gt;443[SYN]</td></tr>
+<tr><td>2019-07-25 16:45:42</td><td>20.1.1.1</td><td>30.1.1.1</td><td>tcp</td><td>[TCP Retransmission]58850-&gt;443[SYN]</td></tr>
+<tr><td>2019-07-25 16:45:44</td><td>20.1.1.1</td><td>30.1.1.1</td><td>tcp</td><td>[TCP Retransmission]58850-&gt;443[SYN]</td></tr>
+</tbody></table>
+<p>由于app端设置的ReadTimeOut超时时间是3s,所以在2次syn重传后，对端就已经报错。如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/tcp_timestamps/syn_time_out.png" alt="image codegen" loading="lazy"></p>
+<p>(注:nginx所在linux服务器设置的tcp_syn_retries是2)</p>
+<h2 id="%E6%8A%93%E5%8C%85%E7%BB%93%E6%9E%9C%E5%88%86%E6%9E%90">抓包结果分析</h2>
+<p>从抓包得出的数据来看，第二台nginx发送syn包给对端服务,对端服务没有任何响应，导致了nginx2创建连接超时，进而导致了app端的ReadTimeOut超时(app对nginx是短连接)。 按照正常推论，应该是防火墙外到对端服务的SYN丢失了。而阿里云作为一个非常稳定的服务商，应该不可能出现如此大概率的丢失现象。而从对端服务器用的是非常成熟的SpringBoot来看，也不应该出现这种bug。那么最有可能的就是对端服务器本身的设置有问题。</p>
+<h2 id="%E7%99%BB%E9%99%86%E5%AF%B9%E7%AB%AF%E6%9C%8D%E5%8A%A1%E5%99%A8%E8%BF%9B%E8%A1%8C%E6%8E%92%E6%9F%A5">登陆对端服务器进行排查</h2>
+<p>由于对方的开发来到了现场，于是笔者就直接用他的电脑登录了服务所在的阿里云服务器。首先看了下dmesg,如下图所示，有一堆报错:</p>
+<pre><code class="language-">dmesg:
+__ratelimit: 33491 callbacks suppressed
+TCP: time wait bucket table overflow
+TCP: time wait bucket table overflow
+TCP: time wait bucket table overflow
+......</code></pre>
+<p>感觉有点关联，但是仅靠这个信息无法定位问题。紧接着，笔者运行了下netstat -s:</p>
+<pre><code class="language-">netstat -s
+......
+16990 passive connections rejected because of time stamp 
+......</code></pre>
+<p>这条命令给出了非常关键的信息,翻译过来就是有16990个被动连接由于时间戳(time stamp)而拒绝！查了下资料发现这是由于设置了</p>
+<pre><code class="language-">tcp_timestamps == 1 &amp;&amp; tcp_tw_recycle == 1</code></pre>
+<p>在NAT情况下将会导致这个被动拒绝连接的问题。而为解决上面的dmesg日志,网上给出的解决方案就是设置tcp_tw_recycle=1而tcp_timestamps默认就是1,同时我们的客户端调用也是从NAT出去的，符合了这个问题的所有特征。 于是笔者尝试着将他们的tcp_timestamps设为0，</p>
+<pre><code class="language-">echo &#x27;0&#x27; &gt; /proc/sys/net/ipv4/tcp_timestamps
+ or
+echo &#x27;0&#x27; &gt; /proc/sys/net/ipv4/tcp_tw_recycle</code></pre>
+<p>又做了几十次调用，再也没有任何报错了！</p>
+<h2 id="linux%E6%BA%90%E7%A0%81%E5%88%86%E6%9E%90">linux源码分析</h2>
+<p>问题虽然解决了，但是笔者想从源码层面看一看这个问题到底是怎么回事，于是就开始研究对应的源码(基于linux-2.6.32源码)。 由于问题是发生在nginx与对端服务器第一次握手(即发送第一个syn)的时候，于是我们主要跟踪下这一处的相关源码:</p>
+<pre><code class="language-">// 三次握手第一个SYN kernel走的分支
+tcp_v4_do_rcv
+	|-&gt;tcp_v4_hnd_req
+	|-&gt;tcp_rcv_state_process
+		/** case TCP_LISTEN &amp;&amp; th-&gt;syn */
+		|-&gt;conn_request(tcp_v4_conn_request)</code></pre>
+<p>关于tcp_timestamps的代码就在tcp_v4_conn_request里面,我们继续追踪(以下代码忽略了其它不必要的逻辑):</p>
+<pre><code class="language-c">
+int tcp_v4_conn_request(struct sock *sk, struct sk_buff *skb)
+{
+	......
+	/* VJ&#x27;s idea. We save last timestamp seen
+	 * from the destination in peer table, when entering
+	 * state TIME-WAIT, and check against it before
+	 * accepting new connection request.
+	 * 注释大意为:
+	 * 我们在进入TIME_WAIT状态的时候将最后的时间戳记录到peer tables中，
+	 * 然后在新的连接请求进来的时候检查这个时间戳
+	 */
+	 // 在tcp_timestamps和tcp_tw_recycle开启的情况下
+	if (tmp_opt.saw_tstamp &amp;&amp;
+	    tcp_death_row.sysctl_tw_recycle &amp;&amp;
+	    (dst = inet_csk_route_req(sk, req)) != NULL &amp;&amp;
+	    (peer = rt_get_peer((struct rtable *)dst)) != NULL &amp;&amp;
+	    peer-&gt;v4daddr == saddr) {
+		/** TCP_PAWS_MSL== 60 */
+		/** TCP_PAWS_WINDOW ==1 */
+		// 以下都是针对同一个对端ip
+		// tcp_ts_stamp 对端ip的连接进入time_wait状态后记录的本机时间戳	
+		// 当前时间在上一次进入time_wait记录的实际戳后的一分钟之内
+		if (get_seconds() &lt; peer-&gt;tcp_ts_stamp + TCP_PAWS_MSL &amp;&amp;
+		// tcp_ts 最近接收的那个数据包的时间戳(对端带过来的)
+		// 对端当前请求带过来的时间戳小于上次记录的进入time_wait状态后记录的对端时间戳
+		    (s32)(peer-&gt;tcp_ts - req-&gt;ts_recent) &gt;
+						TCP_PAWS_WINDOW) {
+			// 增加被动连接拒绝的统计信息
+			NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_PAWSPASSIVEREJECTED);
+			// 进入丢弃和释放阶段
+			goto drop_and_release;
+		}
+	}	
+	......
+}</code></pre>
+<p>上述代码的核心意思即是在tcp_timestamps和tcp_tw_recycle开启的情况下，同样ip的连接，在上个连接进入time_wait状态的一分钟内，如果有新的连接进来，而且新的连接的时间戳小于上个进入time_wait状态的最后一个包的时间戳，则将这个syn丢弃，进入drop_and_release。我们继续跟踪drop_and_release:</p>
+<pre><code class="language-c">int tcp_v4_conn_request(struct sock *sk, struct sk_buff *skb){
+	......
+	drop_and_release:
+		dst_release(dst);
+	drop_and_free:
+		reqsk_free(req);
+	drop:
+		return 0;
+}</code></pre>
+<p>我们继续看下如果tcp_v4_conn_request返回0的话，系统是什么表现:</p>
+<pre><code class="language-c">int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb,
+			  struct tcphdr *th, unsigned len)
+{
+	......
+	// 由于tcp_v4_conn_request所以不走下列分枝
+	if (icsk-&gt;icsk_af_ops-&gt;conn_request(sk, skb) &lt; 0)
+		return 1
+	// 所以此处也返回0
+	kfree_skb(skb);
+	return 0;
+}
+// 再跳回tcp_v4_do_rcv
+int tcp_v4_do_rcv(struct sock *sk, struct sk_buff *skb)
+{
+	// 由于tcp_rcv_state_process这边返回的是0，所以不走reset的逻辑
+	if (tcp_rcv_state_process(sk, skb, tcp_hdr(skb), skb-&gt;len)) {
+		rsk = sk;
+		goto reset;
+	}
+	// 走到这边之后，不发送reset包，不给对端任何响应
+	TCP_CHECK_TIMER(sk);
+	return 0;
+}</code></pre>
+<p>从源码的跟踪可以看出，出现此种情况直接丢弃对应的syn包，对端无法获得任何响应从而进行syn重传，这点和抓包结果一致。</p>
+<h2 id="%E5%92%8C%E9%97%AE%E9%A2%98%E8%A1%A8%E8%B1%A1%E4%B8%80%E4%B8%80%E9%AA%8C%E8%AF%81">和问题表象一一验证</h2>
+<h3 id="%E4%B8%BA%E4%BB%80%E4%B9%88%E4%BC%9A%E5%87%BA%E7%8E%B0%E4%B8%80%E5%8F%B0nginx%E4%B8%80%E7%9B%B4okay-%E4%B8%80%E5%8F%B0nginx%E5%A4%B1%E8%B4%A5%E7%9A%84%E6%83%85%E5%86%B5">为什么会出现一台nginx一直okay，一台nginx失败的情况</h3>
+<p>由于tcp的时间戳是指的并不是当前本机用date命令给出的时间戳。这个时间戳的计算规则就在这里不展开了，只需要知道每台机器的时间戳都不相同即可(而且相差可能极大)。由于我们调用对端采用的是NAT，所以两台nginx在对端服务器看来是同一个ip,那么这两台的时间戳发送到对端服务器的时候就会混乱。nginx1的时间戳比nginx2的时间戳大,所以在一分钟之内，只要出现nginx1的连接请求(短连接)，那么之后的nginx2的连接请求就会一直被丢弃。如下图所示:</p>
+<p class="image-only"><img src="/blog/assets/source/image/tcp_timestamps/timstamps_reason.png" alt="image codegen" loading="lazy"></p>
+<h3 id="%E4%B8%BA%E4%BB%80%E4%B9%88%E5%AF%B9%E7%AB%AF%E8%87%AA%E6%B5%8B%E4%B8%80%E7%9B%B4%E6%AD%A3%E5%B8%B8">为什么对端自测一直正常</h3>
+<p>因为本机调用本机的时时间戳是一台机器(本机)上的，所以不会出现混乱。</p>
+<h3 id="%E4%B8%BA%E4%BB%80%E4%B9%88nginx2%E8%B0%83%E7%94%A8%E5%85%B6%E5%AE%83%E6%9C%8D%E5%8A%A1%E6%98%AF%E6%AD%A3%E5%B8%B8%E7%9A%84">为什么nginx2调用其它服务是正常的</h3>
+<p>因为其它的外部服务服务器并没有开启tcp_tw_recycle。这个问题事实上将tcp_tw_recycle置为0也可以解决。另外，高版本的linux内核已经去掉了tcp_tw_recycle这个参数。</p>
+<h2 id="%E6%80%BB%E7%BB%93">总结</h2>
+<p>由于当前ip地址紧缺和DNS报文大小的限制(512字节),大部分网络架构都是采用NAT的方式去和外部交互，所以设置了tcp_tw_recycle为1基本都会出现问题。一般这种问题需要对tcp协议有一定的了解才能够顺藤摸瓜找到最终的根源。</p>
+<h2 id="%E5%8E%9F%E6%96%87%E9%93%BE%E6%8E%A5">原文链接</h2>
+<p>赞赏码！</p></div>
+    <nav class="prev-next"><a href="/blog/articles/bug-6995f45c.html"><small>上一篇</small><span>解Bug之路-记一次线上请求偶尔变慢的排查</span></a><a href="/blog/articles/bug-key-c35d61ac.html"><small>下一篇</small><span>解Bug之路-隔离故障点后业务不恢复?-热点Key处理与亚稳态故障</span></a></nav>
+  </article>
+  <aside class="article-related">
+    <h2>同类文章</h2><a href="/blog/articles/bug-nat-e95e7827.html">解Bug之路-NAT引发的性能瓶颈</a>
+<a href="/blog/articles/bug-key-c35d61ac.html">解Bug之路-隔离故障点后业务不恢复?-热点Key处理与亚稳态故障</a>
+<a href="/blog/articles/bug-with-ai-909a31ae.html">解Bug之路-with AI-应用被限流？</a>
+<a href="/blog/articles/bug-999-3fc4d0f3.html">解Bug之路-应用999线升高</a>
+<a href="/blog/articles/bug-mysql-seconds-behind-master-f91a1925.html">解Bug之路-MySQL-Seconds_behind_master精度问题引发的思考</a>
+<a href="/blog/articles/bug-zookeeper-1b26955c.html">解Bug之路-ZooKeeper集群拒绝服务</a>
+<a href="/blog/articles/bug-9ac0cd85.html">解Bug之路-主从切换&quot;未成功&quot;?</a>
+<a href="/blog/articles/bug-tcp-bug-d2a0b4b0.html">解Bug之路-TCP使用不当引起的Bug</a>
+<a href="/blog/articles/bug-6995f45c.html">解Bug之路-记一次线上请求偶尔变慢的排查</a>
+<a href="/blog/articles/bug-nginx-502-bad-gateway-a95af6ef.html">解Bug之路-Nginx 502 Bad Gateway</a>
+<a href="/blog/articles/bug-sql-64530c9f.html">解Bug之路-中间件&quot;SQL重复执行&quot;</a>
+<a href="/blog/articles/bug-9db7e3e3.html">解Bug之路-记一次存储故障的排查过程</a>
+<a href="/blog/articles/bug-dubbo-zookeeper-29ed9784.html">解Bug之路-dubbo应用无法重连zookeeper</a>
+<a href="/blog/articles/bug-dubbo-cac59f88.html">解Bug之路-dubbo流量上线时的非平滑问题</a>
+<a href="/blog/articles/bug-sql-f1e2ba02.html">解Bug之路-记一次中间件导致的慢SQL排查过程</a>
+<a href="/blog/articles/bug-kernel-tcp-caa0286b.html">解Bug之路-记一次对端kernel宕
+  </aside>
+</main>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, securityLevel: "loose" });
+</script>
+</body>
+</html>
