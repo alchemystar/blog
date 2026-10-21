@@ -86,7 +86,7 @@ ip_vs_in(unsigned int hooknum, struct sk_buff *skb,
 <p class="image-only"><img src="/blog/assets/source/image/remote/www.alchemystar.net/lvs_monitor-31f81651620a.png" alt="image codegen" loading="lazy"></p>
 <p>一旦我们配置了跌0告警，很容易让我们误以为当前系统出现了重大故障，实际可能只是流量的正常增长。抑或将我们排查问题的思路错误导向到LVS上游流量出了问题。</p>
 <p>具体可以看笔者的这篇文章: https://www.alchemystar.net/articles/bug-nat-e95e7827.html</p>
-<p>注: 对于LVS源码的仅限于在该case的</p>
+<p>注: 这个问题只是在当前案例下的LVS相关实现和配置导致的问题。</p>
 <h2 id="%E6%95%B0%E6%8D%AE%E7%B2%BE%E5%BA%A6%E4%B8%8D%E5%A4%9F%E5%AF%BC%E8%87%B4%E5%B9%BB%E8%A7%89">数据精度不够导致幻觉</h2>
 <p>当我们追求的指标精度超过了数据指标所能表达的精度范围之外也会产生幻觉。例如seconds_behind_master这个主从延迟的黄金指标。这个指标的单位是秒，也就是说它只能表达秒级的延迟，但有意思的是我们在监控计算上对它取平均的时候，往往会产生百毫秒这种错觉。也即一个从库是20ms延迟，另一个从库是500ms延迟。据此判定20ms从库比500ms从库主从延迟好就是从这个秒级指标衍生出来的幻觉，事实上这两可能在实际延迟中完全一样，唯一的不一样只在于主从连接的时候有没有由于主从clock的diff而在秒的维度产生较大的误差而已。如下图所示:</p>
 <p class="image-only"><img src="/blog/assets/source/image/remote/www.alchemystar.net/seconds_behind_master_scope-6cad2174bbbc.png" alt="bug_locale" loading="lazy"></p>
@@ -105,7 +105,9 @@ ip_vs_in(unsigned int hooknum, struct sk_buff *skb,
 <pre><code class="language-">select * from information_schema.processlist</code></pre>
 <p>用来观察当前MySQL上的每个连接正在做什么，用来获取慢SQL/锁等待等信息。information_schema是一张MySQL内存里面的内部表，当我们在查询这张表的时候，其实会动态生成这张表。相应的，这张内部表生成时候的插入到这张表的记录也会增加到innodb_rows_inserted里面，尽管这个select命令！代码Stack如下:</p>
 <pre><code class="language-">fill_schema_processlist()
+		......
     -&gt;schema_table_store_record()
+    		......
         |-&gt;srv_stats_.n_rows_inserted.inc()</code></pre>
 <p>当我们连接数过多的时候，例如数千个，一次processlist命令就会增加数千条innodb_rows_inserted。假设10s探测一次，连接有5000个，那我们就会发现在分钟级的监控中由innodb_rows_inserted计算出的QPS(在这里就是rows/s)平均多出了500，如果我们有秒级监控则会发现在运行sql的那一秒突刺增加了5000。更有甚者，一旦发现数据库有问题，我们要动态加大观测频率的时候，这个效应就会急剧放大我们观测到的insert rows QPS，例如搞成1s一次，在分钟级的监控中QPS就会凭空增长5000!如下图所示:</p>
 <p class="image-only"><img src="/blog/assets/source/image/remote/blog-image-1256443715.cos.ap-guangzhou.myqcloud.com/2026-10-20-142428-b47ec218bb19.png" alt="image-20261020222423701" loading="lazy"></p>
