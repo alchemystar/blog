@@ -90,20 +90,20 @@ ip_vs_in(unsigned int hooknum, struct sk_buff *skb,
 <h2 id="%E6%95%B0%E6%8D%AE%E7%B2%BE%E5%BA%A6%E4%B8%8D%E5%A4%9F%E5%AF%BC%E8%87%B4%E5%B9%BB%E8%A7%89">数据精度不够导致幻觉</h2>
 <p>当我们追求的指标精度超过了数据指标所能表达的精度范围之外也会产生幻觉。例如seconds_behind_master这个主从延迟的黄金指标。这个指标的单位是秒，也就是说它只能表达秒级的延迟，但有意思的是我们在监控计算上对它取平均的时候，往往会产生百毫秒这种错觉。也即一个从库是20ms延迟，另一个从库是500ms延迟。据此判定20ms从库比500ms从库主从延迟好就是从这个秒级指标衍生出来的幻觉，事实上这两可能在实际延迟中完全一样，唯一的不一样只在于主从连接的时候有没有由于主从clock的diff而在秒的维度产生较大的误差而已。如下图所示:</p>
 <p class="image-only"><img src="/blog/assets/source/image/remote/www.alchemystar.net/seconds_behind_master_scope-6cad2174bbbc.png" alt="bug_locale" loading="lazy"></p>
-<p>在主库时钟1.0s的时候从库发起connect，seconds_behind_master就很低为0。在主库时钟1.5s的时候从库发起connect，seconds_behind_master就为1。两个主从延迟都为0的从库，仅仅由于和主库建立连接时间点不一样就造成了一个比另一个差的假象，这就是这个seconds_behind_master指标由于精度问题给我们带来的幻觉。 详情可以见笔者的博客: https://www.alchemystar.net/articles/mysql-seconds-behind-master-fceee9b1.html</p>
+<p>图中，主库时钟为1.0s、从库时钟为0.5s时建立连接，计算出的clock_diff_with_master为-1。在实际复制延迟为0的假设下，同一条连接的seconds_behind_master仍会随观测时刻在0和1之间变化。改变建连时刻，又可能改变这个秒级时钟差的取整结果，进而改变后续读数的分布。因此，两个实际复制延迟相同的从库，也可能呈现出不同的平均读数。这就是seconds_behind_master指标由于精度问题给我们带来的幻觉。 详情可以见笔者的博客: https://www.alchemystar.net/articles/mysql-seconds-behind-master-fceee9b1.html</p>
 <h2 id="%E6%95%B0%E6%8D%AE%E4%BA%A7%E7%94%9F%E6%9D%A5%E6%BA%90%E5%8D%95%E4%B8%80%E5%AF%BC%E8%87%B4%E5%B9%BB%E8%A7%89">数据产生来源单一导致幻觉</h2>
 <p>数据来源也很容易导致幻觉，尤其是在我们要衡量不同节点之间差距的时候，如果数据来源只有一个节点，也就是只采集一个节点的数据做运算，那么就天然的无法反应出在节点间无法通信时候的状况，以至于让我们能产生这两节点没有任何差距的幻觉。seconds_behind_master这个主从延迟就能产生这种幻觉。</p>
 <pre><code class="language-">Seconds_behind_master = max(0,从库当前时间-正在回放时间的主库时间-主从时间差)
 1.从库当前时间从 从库 取得
 2.正在回放时间的主库时间是 当前从库正在回放的主库事件的时间戳，这个事件已经被从库接受了
 3.主从时间差从 主从connect的那一刻取得</code></pre>
-<p>从上面的公式我们可以看出，在计算seconds_behind_master的这一刻并没有同时从主库获取任何信息。主库事件的时间戳也是从库中本身的已经接收到的信息。那很明显的，要衡量主从的差距没有主库事实信息的参与那肯定是不准确的。这个指标事实上只反应了SQL线程apply事件的时间和IO线程拉取到的事件时间的差距。 就举一个我们演练时候遇到的极端例子，我们在演练时刻模拟主从网络断开，从库无法拉取到最新的主库事件，那么尽管主从延迟拉长到几十分钟，seconds_behind_master依旧为0(SQL线程由于断网无法接收到新的时间所以回放完成与apply线程同步了)，只有在主从重新建连的那一刻，才会有seconds_behind_master延迟了数十分钟的反应(因为来了几十分钟后的最新事件)，在模拟断网时刻一切静悄悄，一旦恢复类似的告警就会如潮水般涌来。如下图所示:</p>
+<p>从上面的公式我们可以看出，在计算seconds_behind_master的这一刻并没有同时从主库获取任何信息。主库事件的时间戳也是从库中本身的已经接收到的信息。那很明显的，要衡量主从的差距没有主库事实信息的参与那肯定是不准确的。这个指标事实上只反应了SQL线程apply事件的时间和IO线程拉取到的事件时间的差距。 就举一个我们演练时候遇到的极端例子，我们在演练时刻模拟主从网络断开，从库无法拉取到最新的主库事件，那么尽管主从延迟拉长到几十分钟，seconds_behind_master仍可能保持为0（SQL线程已回放完I/O线程此前接收到的事件，而I/O线程尚未感知连接失效，仍被标记为已连接）。恢复连接并重新接收事件后，SQL线程开始回放断网期间积压的旧事件，指标才显示出数十分钟的延迟。在模拟断网时刻一切静悄悄，一旦恢复类似的告警就会如潮水般涌来。如下图所示:</p>
 <p class="image-only"><img src="/blog/assets/source/image/remote/blog-image-1256443715.cos.ap-guangzhou.myqcloud.com/2026-10-20-142355-cb0851d0fcb4.png" alt="image-20261020222332676" loading="lazy"></p>
 <p>在这个例子里，我们就会在故障时刻产生啥问题都没有发生的岁月静好的幻觉，但实际已经造成了很长时间的影响。</p>
 <h2 id="%E6%95%B0%E6%8D%AE%E8%A2%AB%E8%A7%82%E6%B5%8B%E5%BD%B1%E5%93%8D%E5%AF%BC%E8%87%B4%E5%B9%BB%E8%A7%89">数据被观测影响导致幻觉</h2>
 <p>观测本身也会影响数据的生产，有一些指标如果你做了某些特定的观测和不做这种观测会表现出不同的结果。笔者举一个例子Innodb_rows_inserted这个指标，其本身设计的指标是来观察数据库的插入负载， 但我们在做数据库的监控观测的时候，会频繁的运行下面这个命令:</p>
 <pre><code class="language-">select * from information_schema.processlist</code></pre>
-<p>用来观察当前MySQL上的每个连接正在做什么，用来获取慢SQL/锁等待等信息。information_schema是一张MySQL内存里面的内部表，当我们在查询这张表的时候，其实会动态生成这张表。相应的，这张内部表生成时候的插入到这张表的记录也会增加到innodb_rows_inserted里面，尽管这个select命令！代码Stack如下:</p>
+<p>用来观察当前MySQL上的每个连接正在做什么，用来获取慢SQL/锁等待等信息。查询information_schema.processlist时，MySQL会动态生成查询结果。在该案例的执行路径中，结果被写入InnoDB内部临时表，这些内部插入也被计入了Innodb_rows_inserted，尽管用户执行的是SELECT命令！代码Stack如下:</p>
 <pre><code class="language-">fill_schema_processlist()
 		......
     -&gt;schema_table_store_record()
@@ -128,7 +128,7 @@ ip_vs_in(unsigned int hooknum, struct sk_buff *skb,
 <p>监控往往是从用定时的方式从对应的机器取相关的数据，例如每分钟一次。那么如果每分钟内负载其实有相当大的波动，在前30s之内，CPU能到50%，在后30s，CPU只能到10%，但监控取点在这一分钟的相位往往是固定的，例如A机器固定在第10s取点，B机器固定在第50s取点，在监控看来A机器的CPU负载就是B机器的五倍。注:当前采样公式为:</p>
 <pre><code class="language-">每分钟采样一次
 CPU.busy = (当前采样时刻容器累计 CPU 时间 - 1 秒前容器累计 CPU 时间) / 1s</code></pre>
-<p>如下图所示:<img src="/blog/assets/source/image/remote/alchemystar.github.io/2026-06-29-143003-9665238e7129-a3f2e560f459.png" alt="img" loading="lazy"> 如果我们无法识别出来这是由监控带来的相位幻觉，那其实非常容易将我们排查问题的走向转向机器负载不均衡。 具体问题可以见笔者的博客: https://www.alchemystar.net/articles/cpu-busy-5-7a232df0.html</p>
+<p>如下图所示:<img src="/blog/assets/source/image/remote/blog-image-1256443715.cos.ap-guangzhou.myqcloud.com/2026-10-21-153755-d1df11939377.png" alt="img" loading="lazy"> 如果我们无法识别出来这是由监控带来的相位幻觉，那其实非常容易将我们排查问题的走向转向机器负载不均衡。 具体问题可以见笔者的博客: https://www.alchemystar.net/articles/cpu-busy-5-7a232df0.html</p>
 <h2 id="%E8%AF%BB%E5%8F%96%E6%97%B6%E9%97%B4%E7%82%B9%E7%9A%84%E7%9B%B8%E4%BD%8D%E6%BC%82%E7%A7%BB%E5%AF%BC%E8%87%B4%E5%B9%BB%E8%A7%89">读取时间点的相位漂移导致幻觉</h2>
 <p>相位漂移会产生更加隐蔽的幻觉，而且会在很大程度上影响我们的排查方向。固定的相位漂移会将我们误导到这是一个长周期的问题。就举一个很经典的例子，这也是笔者和另一位同学一块排查的。这是一个CPU load每隔7小时就会飙高并持续8分钟的问题。很明显的，按照通用的思路，我们应该排查每7个小时一次的定时任务，但我们始终无法找到。那后续我们采用的方案是采用ebpf抓那8分钟的CPU load对应的nr_running计数，比对过数据发现每分钟都会在第37s的时间点有将近100ms的nr_running高。但这个100ms的nr_running高在故障时间段之外依旧保持同样的第37s高，没有任何变化。这就让我们不得不怀疑起采样点的相位漂移问题。看了下源代码，CPU load的采样周期是:</p>
 <pre><code class="language-">LOAD_FREQ = 5 * HZ + 1 对应于现代服务器CONFIG_HZ=1000也就是5s+1ms</code></pre>
