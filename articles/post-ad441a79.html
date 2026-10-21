@@ -81,10 +81,12 @@ ip_vs_in(unsigned int hooknum, struct sk_buff *skb,
 	}
 	......
 }</code></pre>
-<p>由于2MSL的存在，LVS本身会设置独立的表项超时策略，在默认120s之后(FIN_WAIT/TIME_WAIT)才会回收表项。为了创建连接的性能考虑，TCP协议允许端口复用，LVS本身也会进行表项复用。但从上面代码可以看到，LVS的新建连接数conn++只是反映了表项的增长。所以这个监控指标完全无法反应端口复用的情况，就导致LVS的新建连接数在新建连接超过一定速率导致复用表项的时候产生失真。表项的增减表达空间是有限的，真实的新建连接数超过了这个限制。 这就会产生一个幻觉，明明新建连接速率变快了，但这个监控指标却会反应出来速率大幅下跌甚至跌0！如下图所示:</p>
+<p>由于2MSL的存在，LVS本身会设置独立的表项超时策略，在默认120s之后(FIN_WAIT/TIME_WAIT)才会回收表项。为了创建连接的性能考虑，TCP协议允许端口复用，LVS本身也会进行表项复用。但从上面代码可以看到，LVS的新建连接数conn++只是反映了表项的增长。所以这个监控指标完全无法反应端口复用的情况，就导致LVS的新建连接数在新建连接超过一定速率导致复用表项的时候产生失真。表项的增长表达空间是有限的，真实的新建连接数超过了这个限制。</p>
+<p>这就会产生一个幻觉，明明新建连接速率变快了，但这个监控指标却会反应出来速率大幅下跌甚至跌0！如下图所示:</p>
 <p class="image-only"><img src="/blog/assets/source/image/remote/www.alchemystar.net/lvs_monitor-31f81651620a.png" alt="image codegen" loading="lazy"></p>
 <p>一旦我们配置了跌0告警，很容易让我们误以为当前系统出现了重大故障，实际可能只是流量的正常增长。抑或将我们排查问题的思路错误导向到LVS上游流量出了问题。</p>
 <p>具体可以看笔者的这篇文章: https://www.alchemystar.net/articles/bug-nat-e95e7827.html</p>
+<p>注: 对于LVS源码的仅限于在该case的</p>
 <h2 id="%E6%95%B0%E6%8D%AE%E7%B2%BE%E5%BA%A6%E4%B8%8D%E5%A4%9F%E5%AF%BC%E8%87%B4%E5%B9%BB%E8%A7%89">数据精度不够导致幻觉</h2>
 <p>当我们追求的指标精度超过了数据指标所能表达的精度范围之外也会产生幻觉。例如seconds_behind_master这个主从延迟的黄金指标。这个指标的单位是秒，也就是说它只能表达秒级的延迟，但有意思的是我们在监控计算上对它取平均的时候，往往会产生百毫秒这种错觉。也即一个从库是20ms延迟，另一个从库是500ms延迟。据此判定20ms从库比500ms从库主从延迟好就是从这个秒级指标衍生出来的幻觉，事实上这两可能在实际延迟中完全一样，唯一的不一样只在于主从连接的时候有没有由于主从clock的diff而在秒的维度产生较大的误差而已。如下图所示:</p>
 <p class="image-only"><img src="/blog/assets/source/image/remote/www.alchemystar.net/seconds_behind_master_scope-6cad2174bbbc.png" alt="bug_locale" loading="lazy"></p>
